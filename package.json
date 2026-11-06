@@ -1,0 +1,31 @@
+{
+  "name": "dsh-codebuddy",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "把腾讯 CodeBuddy（copilot.tencent.com）的免费模型接进 DSH 模型选择器：DeepSeek / GLM / Kimi / MiniMax 等，复用 Channel Pack 已登录的账号凭据。",
+  "keywords": ["dsh", "dsh-plugin", "codebuddy", "tencent", "free-model", "llm-provider"],
+  "license": "MIT",
+  "author": "muti2607",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muti2607/dsh-codebuddy.git"
+  },
+  "homepage": "https://github.com/muti2607/dsh-codebuddy",
+  "bugs": {
+    "url": "https://github.com/muti2607/dsh-codebuddy/issues"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "scripts": {
+    "test": "node test/verify-adapter.mjs && node test/verify-sse.mjs"
+  },
+  "files": ["index.js", "cordis.patch.yml", "locale/*.json", "icon.svg", "README.md", "LICENSE", "test/*.mjs"],
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" }
+  }
+}

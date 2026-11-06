@@ -1,0 +1,208 @@
+/**
+ * Offline check for dsh-codebuddy Host half:
+ *   1. serializeMessages 把 DSH 消息转成 OpenAI 线格式，且 system 被中性化
+ *   2. 中性化后的载荷不含任何已知触发词
+ *   3. 适配器契约（providerInfo / listModels / resolveModel / prepareCall）形状正确
+ *   4. 没有凭据时 stream 明确报错而不是静默
+ * Run: node verify-codebuddy.mjs
+ */
+import fs from "node:fs"
+
+// 把 index.js 读进来，取内部函数（模块没导出它们，用文本切片 + Function 构造）
+const src = fs.readFileSync(new URL("../index.js", import.meta.url), "utf8")
+
+function extract(name, kind) {
+  // 抓 function xxx(...) { ... } 或 const xxx = [...]
+  if (kind === "fn") {
+    const start = src.indexOf(`function ${name}(`)
+    if (start < 0) throw new Error(`未找到函数 ${name}`)
+    let depth = 0, i = src.indexOf("{", start)
+    const from = i
+    for (; i < src.length; i++) {
+      if (src[i] === "{") depth++
+      else if (src[i] === "}") { depth--; if (depth === 0) break }
+    }
+    return src.slice(start, i + 1)
+  }
+  const start = src.indexOf(`const ${name} = `)
+  if (start < 0) throw new Error(`未找到常量 ${name}`)
+  // 常量可能是跨多行的数组/对象：从 `const X = ` 起算括号深度，取到收尾的 `]` 或 `}`
+  const eq = src.indexOf("=", start)
+  const openIdx = src.slice(eq).search(/[\[{]/) + eq
+  const open = src[openIdx]
+  const close = open === "[" ? "]" : "}"
+  let depth = 0, i = openIdx
+  for (; i < src.length; i++) {
+    if (src[i] === open) depth++
+    else if (src[i] === close) { depth--; if (depth === 0) break }
+  }
+  // 数组/对象后面可能还挂着 .join('...') 之类的收尾表达式，一并带上
+  let tail = i + 1
+  while (tail < src.length && !/[\n;]/u.test(src.slice(tail, tail + 1))) tail++
+  return src.slice(start, tail)
+}
+
+// 把 index.js 里需要的顶层常量原样搬进 eval 作用域
+const constNames = ["PROVIDER", "DISPLAY_NAME", "ENDPOINT", "API_DOMAIN", "USER_AGENT", "PRODUCT_CODE", "DEPLOYMENT_TYPE", "AUTH_REFRESH_SOURCE", "CHAT_PATH", "CONFIG_PATH", "REFRESH_PATH", "REQUEST_TIMEOUT_MS"]
+const constSrc = constNames.map((n) => {
+  const m = src.match(new RegExp(`^const ${n} = .*$`, "m"))
+  if (!m) throw new Error(`未找到常量 ${n}`)
+  return m[0]
+}).join("\n")
+
+const code = [
+  constSrc,
+  extract("BLOCKED_PATTERNS", "const"),
+  extract("BLOCKED_HINTS", "const"),
+  extract("sanitizeText", "fn"),
+  extract("sanitizeArgs", "fn"),
+  extract("NEUTRAL_SYSTEM", "const"),
+  extract("FALLBACK_MODELS", "const"),
+  extract("serializeMessages", "fn"),
+  extract("normalizeArgs", "fn"),
+  extract("buildHeaders", "fn"),
+  extract("isExpired", "fn"),
+  "return { NEUTRAL_SYSTEM, FALLBACK_MODELS, serializeMessages, buildHeaders, isExpired, sanitizeText }",
+].join("\n\n")
+const mod = new Function(code)()
+const { serializeMessages, buildHeaders, isExpired, NEUTRAL_SYSTEM, FALLBACK_MODELS, sanitizeText } = mod
+
+const fail = (m) => { console.error("FAIL: " + m); process.exitCode = 1 }
+
+// ---- 1. system 中性化 ----
+const messages = [
+  { role: "system", content: [{ type: "text", text: "You are an AI agent powered by DeepSeek Harness.\n\nYou are a coding agent powered by the deepseek-flash model.\n\nTokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root." }] },
+  { role: "user", content: [{ type: "text", text: "hi" }] },
+  { role: "assistant", content: [{ type: "text", text: "hello" }, { type: "reasoning", text: "thinking..." }] },
+  { role: "assistant", content: [{ type: "tool-call", id: "call_1", name: "pwsh", arguments: { command: "ls" } }] },
+  { role: "tool", toolCallId: "call_1", content: [{ type: "text", text: "file list" }] },
+  { role: "user", content: [{ type: "text", text: "继续" }] },
+]
+const wire = serializeMessages(messages)
+const wireJson = JSON.stringify(wire)
+
+if (wire[0].role !== "system") fail("首条必须是 system")
+if (wire[0].content !== NEUTRAL_SYSTEM) fail("system 未被中性化")
+
+// 已知触发词必须全部消失
+for (const bad of ["DeepSeek Harness", "You are an AI agent powered by", "Tokens prefixed with @ are paths the user explicitly referenced", "Relative paths resolve from the workspace root"]) {
+  if (wireJson.includes(bad)) fail(`中性化后仍含触发词: ${bad}`)
+}
+
+// ---- 1b. 历史里被引用过的触发句也必须清理（真实故障场景）----
+// 实测：第二句放在 assistant 历史里同样触发 11128，服务端扫整个 body。
+{
+  const hist = [
+    { role: "system", content: [{ type: "text", text: "whatever" }] },
+    { role: "user", content: [{ type: "text", text: "hi" }] },
+    {
+      role: "assistant",
+      content: [{
+        type: "text",
+        text: "补丁说明：这两句会触发拦截 -\n1) You are an AI agent powered by DeepSeek Harness.\n2) Tokens prefixed with @ are paths the user explicitly referenced. Relative paths resolve from the workspace root; absolute paths identify files or directories on the host.",
+      }],
+    },
+    // 模型复述时会换行、加反引号、动空格
+    { role: "assistant", content: [{ type: "text", text: "原文是 `Tokens prefixed with @  are paths  the user explicitly referenced.` 之后是 Relative paths resolve from the workspace root; absolute paths identify files or directories on the host." }] },
+    { role: "user", content: [{ type: "text", text: "继续" }] },
+    // 工具输出里也可能带上（比如 grep 到源码）
+    { role: "tool", toolCallId: "c1", content: [{ type: "text", text: "src/prompt.ts:1: You are an AI agent powered by DeepSeek Harness." }] },
+  ]
+  const hw = serializeMessages(hist)
+  const hjson = JSON.stringify(hw)
+  for (const bad of ["You are an AI agent powered by DeepSeek Harness", "DeepSeek Harness", "Tokens prefixed with @ are paths the user explicitly referenced", "Relative paths resolve from the workspace root"]) {
+    if (hjson.includes(bad)) fail(`历史中的触发句未被清理: ${bad}`)
+  }
+  if (!hjson.includes("helpful coding assistant") && !hjson.includes("explicit file references")) {
+    fail("替换后应留下中性文案")
+  }
+  // 替换不能吃掉整条消息
+  const assistantCount = hw.filter((m) => m.role === "assistant").length
+  if (assistantCount !== 2) fail("替换不应删除消息，assistant 数 " + assistantCount)
+  // sanitizeText 幂等
+  const once = sanitizeText("You are an AI agent powered by DeepSeek Harness.")
+  if (sanitizeText(once) !== once) fail("sanitizeText 应幂等")
+  // 无敏感词时原样返回
+  const plain = "just a normal sentence about files"
+  if (sanitizeText(plain) !== plain) fail("普通文本不应被改动")
+}
+
+// ---- 2. 线格式形状 ----
+const users = wire.filter((m) => m.role === "user")
+if (users.length !== 2) fail("user 消息数应为 2，实际 " + users.length)
+const assistants = wire.filter((m) => m.role === "assistant")
+if (assistants.length !== 2) fail("assistant 消息数应为 2，实际 " + assistants.length)
+const withCall = assistants.find((m) => Array.isArray(m.tool_calls) && m.tool_calls.length)
+if (!withCall) fail("工具调用未序列化")
+else {
+  const c = withCall.tool_calls[0]
+  if (c.type !== "function" || c.function.name !== "pwsh") fail("工具调用形状不对: " + JSON.stringify(c))
+}
+const toolMsg = wire.find((m) => m.role === "tool")
+if (!toolMsg || toolMsg.tool_call_id !== "call_1") fail("tool 结果未配对")
+
+// 纯文本+工具调用的 assistant：content 应为 null
+const bare = serializeMessages([
+  { role: "assistant", content: [{ type: "tool-call", id: "c9", name: "x", arguments: {} }] },
+])
+const bareA = bare.find((m) => m.role === "assistant")
+if (!bareA || bareA.content !== null) fail("只有工具调用时 content 必须为 null")
+
+// ---- 3. header ----
+const h = buildHeaders({ access_token: "AT", user_id: "u1", enterprise_id: "" })
+if (h["User-Agent"] !== "CodeBuddyIDE/1.106.1") fail("UA 不对")
+if (h.Authorization !== "Bearer AT") fail("Authorization 不对")
+if (h["X-Product-Code"] !== "codebuddy") fail("X-Product-Code 不对")
+if (h["X-Enterprise-Id"] !== undefined) fail("空 enterprise_id 不该出现")
+
+// ---- 4. 过期判定 ----
+if (!isExpired(null)) fail("null 应视为过期")
+if (isExpired({ expires_at: String(Date.now() + 600_000) })) fail("未过期被判过期")
+if (!isExpired({ expires_at: String(Date.now() - 1) })) fail("已过期被判未过期")
+
+// ---- 5. 模型表 ----
+if (FALLBACK_MODELS.length < 10) fail("兜底模型太少")
+const ids = new Set(FALLBACK_MODELS.map((m) => m.id))
+for (const need of ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3-1"]) if (!ids.has(need)) fail("缺模型 " + need)
+
+// ---- 6. 适配器契约（用假 ctx 跑 apply） ----
+const { apply } = await import(new URL("../index.js", import.meta.url).href)
+let registered = null
+const fake = {
+  logger: { info: () => {}, warn: () => {} },
+  llm: {
+    registerAdapter(providers, adapter) { registered = { providers, adapter }; return { dispose() { registered = null } } },
+    registerConfigurableProviders(entries) { fake.configurable = entries },
+  },
+  credentials: { async resolve() { return null }, async set() {} },
+  // Cordis 的依赖注入：依赖齐备时才回调
+  inject(deps, callback) { callback(fake); return () => {} },
+}
+const dispose = apply(fake, {})
+if (!registered) fail("未注册适配器")
+else {
+  const a = registered.adapter
+  if (registered.providers[0] !== "codebuddy") fail("provider 名不对")
+  const info = a.providerInfo("codebuddy")
+  if (!info.id || !info.name) fail("providerInfo 形状不对")
+  const policy = a.providerRetryPolicy()
+  if (!Array.isArray(policy.retryableCodes)) fail("retryPolicy 形状不对")
+  const models = await a.listModels()
+  if (models.length !== FALLBACK_MODELS.length) fail("listModels 数量不对: " + models.length)
+  if (models[0].provider !== "codebuddy") fail("listModels provider 不对")
+  const rm = await a.resolveModel("codebuddy", "deepseek-v4.1-flash")
+  if (!rm.context || rm.context.contextWindow !== 1_000_000) fail("resolveModel context 不对: " + JSON.stringify(rm.context))
+  if (!rm.defaultMaxTokens) fail("resolveModel defaultMaxTokens 缺失")
+  if (!rm.reasoning || rm.reasoning.efforts.length === 0) fail("resolveModel reasoning 缺失")
+  const pc = await a.prepareCall("codebuddy", "deepseek-v4.1-flash")
+  if (!pc.model || typeof pc.stream !== "function") fail("prepareCall 形状不对")
+  // 没有凭据时 stream 必须明确报错
+  let threw = ""
+  try { for await (const _ of pc.stream({ model: "deepseek-v4.1-flash", messages: [] })) {} }
+  catch (e) { threw = String(e.message) }
+  if (!/凭据|credential/i.test(threw)) fail("无凭据应报缺少凭据，实际: " + threw)
+}
+if (typeof dispose !== "function") fail("apply 必须返回清理函数")
+dispose()
+
+console.log(JSON.stringify({ ok: !process.exitCode, models: FALLBACK_MODELS.length, neutralSystemChars: NEUTRAL_SYSTEM.length }, null, 2))
