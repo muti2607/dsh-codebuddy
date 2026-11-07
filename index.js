@@ -155,7 +155,40 @@ const FALLBACK_MODELS = [
   { id: 'minimax-m3', name: 'MiniMax-M3', contextWindow: 512_000, supportsImages: true, reasoningEfforts: ['medium'], maxOutputTokens: 64_000 },
   { id: 'hy3', name: 'Hy3', contextWindow: 192_000, supportsImages: true, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
   { id: 'hy4-preview', name: 'Hy4 preview', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
+  { id: 'hy4free', name: 'Hy4 free', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
 ]
+
+/** 远端目录缺元信息时的通用等级：宁可给出 low/high 让用户能选。 */
+const GENERIC_EFFORTS = ['low', 'high']
+
+/** 远端字段名没有公开契约，对常见拼法全部兼容；大小写不敏感。 */
+function pickEfforts(remoteModel) {
+  for (const key of ['reasoningEfforts', 'reasoning_efforts', 'supportedEfforts', 'thinkingLevels', 'reasoningLevels']) {
+    const v = remoteModel?.[key]
+    if (Array.isArray(v) && v.length > 0) return v.map(String)
+  }
+  // 有的目录把等级嵌在 reasoning: {...} 对象里
+  const nested = remoteModel?.reasoning
+  if (nested && typeof nested === 'object') {
+    for (const key of ['efforts', 'levels', 'supportedEfforts']) {
+      const v = nested[key]
+      if (Array.isArray(v) && v.length > 0) {
+        return v.map((x) => (x && typeof x === 'object' ? String(x.id ?? x.name ?? '') : String(x))).filter(Boolean)
+      }
+    }
+  }
+  return []
+}
+
+function pickDefaultEffort(remoteModel) {
+  for (const key of ['defaultReasoningEffort', 'default_reasoning_effort', 'defaultEffort']) {
+    const v = remoteModel?.[key]
+    if (typeof v === 'string' && v) return v
+  }
+  const nested = remoteModel?.reasoning
+  if (nested && typeof nested === 'object' && typeof nested.defaultEffort === 'string') return nested.defaultEffort
+  return ''
+}
 
 function dshHome() {
   const env = String(process.env.DSH_HOME || '').trim()
@@ -683,14 +716,21 @@ function install(ctx, cfg, logger) {
       const out = []
       for (const m of list) {
         if (!m || !m.id) continue
+        // 远端目录的思考等级字段名没有公开契约，这里对常见拼法全部兼容；
+        // 解析不到时回退内置兜底表，再兜底通用 low/high —— 否则宿主拿不到
+        // reasoning.efforts，界面上就完全没有「主动选思考等级」的入口。
+        const efforts = pickEfforts(m)
+        const fallback = FALLBACK_MODELS.find((f) => f.id === String(m.id))
         out.push({
           id: String(m.id),
           name: String(m.name || m.id),
           contextWindow: readNumber(m.maxInputTokens) || readNumber(m.contextWindow),
           maxOutputTokens: readNumber(m.maxOutputTokens),
           supportsImages: m.supportsImage === true || m.supportsVision === true || true,
-          reasoningEfforts: Array.isArray(m.reasoningEfforts) ? m.reasoningEfforts.map(String) : [],
-          defaultReasoningEffort: m.defaultReasoningEffort ? String(m.defaultReasoningEffort) : '',
+          reasoningEfforts: efforts.length > 0 ? efforts : (fallback ? fallback.reasoningEfforts : GENERIC_EFFORTS),
+          defaultReasoningEffort: pickDefaultEffort(m)
+            || (fallback ? fallback.defaultReasoningEffort : '')
+            || 'high',
         })
       }
       return out.length > 0 ? out : null

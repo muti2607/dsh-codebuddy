@@ -241,6 +241,14 @@ else {
   if (!rm.context || rm.context.contextWindow !== 1_000_000) fail("resolveModel context 不对: " + JSON.stringify(rm.context))
   if (!rm.defaultMaxTokens) fail("resolveModel defaultMaxTokens 缺失")
   if (!rm.reasoning || rm.reasoning.efforts.length === 0) fail("resolveModel reasoning 缺失")
+  // hy4free 只有兜底表里有：界面必须给出可选等级，否则用户无法主动选思考等级
+  {
+    const rh = await a.resolveModel("codebuddy", "hy4free")
+    if (!rh.reasoning || !Array.isArray(rh.reasoning.efforts) || rh.reasoning.efforts.length < 2) {
+      fail("hy4free 应声明可选思考等级，实际 " + JSON.stringify(rh.reasoning))
+    }
+    if (rh.reasoning && rh.reasoning.defaultEffort !== "high") fail("hy4free 默认等级应为 high")
+  }
   // 图片支持必须如实声明，否则宿主会在添加图片时直接拒绝
   if (!Array.isArray(rm.inputModalities) || !rm.inputModalities.includes("image")) {
     fail("inputModalities 应包含 image，实际 " + JSON.stringify(rm.inputModalities))
