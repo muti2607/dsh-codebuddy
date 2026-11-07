@@ -66,8 +66,12 @@ Illegal API invocation from an unapproved channel
 - **模型目录**：优先 `GET /v3/config` 动态拉取（实测 24 个），失败回退内置 15 个兜底
 - **截断识别**：工具参数 JSON 未闭合时按 `max-tokens` 结束，并保留原始字符串，
   不让宿主丢整次调用
-- **只声明文本输入**：CodeBuddy 模型本身支持图像，但本适配器没有实现 DSH 的附件投影，
-  声明 image 会让图片被静默丢弃 —— 宁可让宿主在添加图片时就拒绝
+- **图片输入**：经 `attachments.readImageRequest` 把 `ImageAttachmentRef` 投影成
+  `data:` URL，按 1568px / 1MB 预算缩放后以 `image_url` 发送。
+  实测 2026-11-07：32×32 纯红图被正确识别为「红色」，64×64 纯绿图识别为「绿色」。
+  注意只接受 OpenAI 风格 `image_url`；旧式 `input_image` 会被拒
+  （`code 11101 Parse message failed: unsupported content type`）。
+  图片读取失败时写成 `[image unavailable]` 占位，不让模型误以为无图。
 
 ## 配置（可选）
 
@@ -81,18 +85,65 @@ Illegal API invocation from an unapproved channel
 ## 测试
 
 ```
-npm test          # 或分别运行下面两个
-node test/verify-adapter.mjs   # 序列化 / 双层净化 / 适配器契约
+npm test          # 三个脚本依次跑
+node test/verify-adapter.mjs   # 序列化 / 双层净化 / 图片 / 适配器契约
 node test/verify-sse.mjs       # SSE 块协议（6 个用例）
+node test/verify-updater.mjs   # 版本比较 / 安装形态 / 远端查询失败语义
 ```
 
-两个脚本都在离线环境下跑，不需要凭据、不联网。
+全部离线运行，不需要凭据、不联网。
+
+## 自动更新
+
+插件会在启动一分钟后检查一次 GitHub 上的最新版本，之后每 6 小时一次。
+
+**只检查、不静默安装。** 发现新版本时写一条 warn 日志，并可通过接口查看/触发更新：
+
+```bash
+# 查有没有新版本（force=1 绕过 60 秒缓存）
+curl http://127.0.0.1:<端口>/api/codebuddy/update?force=1
+
+# 确认更新
+curl -X POST http://127.0.0.1:<端口>/api/codebuddy/update
+```
+
+### 为什么用官方 installBundle 而不是自己替换文件
+
+`dsh-our-free-model` 的自更新是绕过 pnpm 直接改磁盘的，结果是 `pnpm-lock.yaml`
+与实际安装长期不一致。一旦有别的安装动作触发 pnpm 按 lockfile 重建，包就会被
+「恢复」成 lockfile 那个版本 —— 我实际遇到过：2.8.0 被降回 2.5.6，中途还丢了
+`vendor/magpie/bin`，整个包加载失败变成「包不可用」。
+
+本插件改为走 `pluginManager.installBundle('github:...')`，内部就是 pnpm：
+lockfile 始终一致，更新后由 Loader 重新激活，不需要手写重载，也不会留下半损坏状态。
+
+### 前提：用 github: 安装
+
+自更新只对 `github:` 安装生效。若是 `link:` 本地目录安装，接口会明确拒绝 ——
+否则等于让插件改写你自己的源码树。迁移方式：
+
+```bash
+dsh plugin --profile desktop remove dsh-codebuddy
+dsh plugin --profile desktop add github:muti2607/dsh-codebuddy
+```
+
+### 可配置项
+
+```yaml
+- id: codebuddy
+  name: dsh-codebuddy
+  config:
+    autoUpdate: true            # 关掉后台检查
+    updateCheckHours: 6         # 检查间隔
+    autoInstallUpdates: false   # true 时才自动安装（默认只提醒）
+```
 
 ## 已知限制
 
 - CodeBuddy 看到的是中性系统提示词，不是 DSH 完整规则，模型行为可能比其它渠道略松散
 - 腾讯随时可能加新的匹配规则，届时需要更新 `index.js` 里的 `BLOCKED_PATTERNS`
 - 免费额度是每日积分制，DSH 动辄 MB 级上下文，重度使用会很快用尽
+- `imageRequestPricing` 仍返回 `undefined`，含图的大结果可能不落盘（不影响看图）
 
 ## 许可
 
