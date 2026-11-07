@@ -28,6 +28,15 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import {
+  REPO,
+  INSTALL_SPEC,
+  evaluateUpdate,
+  fetchLatestVersion,
+  inspectInstallSource,
+  readLocalVersion,
+} from './src/updater.js'
 
 const PROVIDER = 'codebuddy'
 const DISPLAY_NAME = 'CodeBuddy (腾讯免费)'
@@ -48,12 +57,21 @@ const FIRST_TOKEN_TIMEOUT_MS = 90_000
 const CHUNK_TIMEOUT_MS = 120_000
 
 /**
- * 只声明文本输入。CodeBuddy 的模型确实支持图像，但本适配器没有实现
- * DSH 的附件投影（把 ImageAttachmentRef 读成 data URL），声明 image
- * 会让宿主把图片送进来后被静默丢弃 —— 宁可如实声明 text，让宿主
- * 在添加图片时就拒绝，而不是发出一个「看不到图」的请求。
+ * 图片请求目标（宽高上限与字节预算）。
+ *
+ * 实测 2026-11-07：CodeBuddy 的 deepseek-v4.1-flash 接受 OpenAI 风格的
+ * `{ type: 'image_url', image_url: { url: 'data:image/png;base64,...' } }`，
+ * 32×32 纯红图能被正确识别为「红色」，返回 200。旧式 `input_image` 会被
+ * 拒（code 11101 Parse message failed: unsupported content type）。
+ *
+ * 尺寸取 1568px / 1MB：主流多模态模型的高清切块上限附近，且远低于常见的
+ * 单图体积限制。实际值由 attachments.readImageRequest 按预算自行缩放。
  */
-const MODALITIES = Object.freeze(['text'])
+const IMAGE_MAX_DIMENSION = 1568
+const IMAGE_MAX_BYTES = 1_000_000
+
+/** 输入模态：文本 + 图片（图片经 attachments 服务投影成 data URL）。 */
+const MODALITIES = Object.freeze(['text', 'image'])
 
 /**
  * 已知会触发腾讯 11128 拦截的原文片段。
@@ -159,7 +177,7 @@ function readNumber(value) {
  *   2. **所有角色**的文本再过一遍 sanitizeText —— 服务端扫整个 body，
  *      历史里被引用过的触发句同样会被拦（实测 assistant 历史含第二句 → 400）。
  */
-function serializeMessages(messages) {
+function serializeMessages(messages, imageUrls = new Map()) {
   const wire = []
   for (const message of messages || []) {
     if (!message || typeof message !== 'object') continue
@@ -203,7 +221,18 @@ function serializeMessages(messages) {
     for (const b of blocks) {
       if (!b) continue
       if (b.type === 'text' && typeof b.text === 'string') parts.push({ type: 'text', text: sanitizeText(b.text) })
-      else if (b.type === 'image' && b.imageUrl) parts.push({ type: 'image_url', image_url: { url: b.imageUrl } })
+      else if (b.type === 'image') {
+        // 图片块形如 { type: 'image', attachment: ImageAttachmentRef }。
+        // imageUrls 是 attachmentId → data URL 的映射（在外层异步读好）。
+        const id = b.attachment && b.attachment.attachmentId
+        const url = id === undefined ? undefined : imageUrls.get(String(id))
+        if (url === undefined) {
+          // 读不到就明确说明，而不是让模型以为没图。
+          parts.push({ type: 'text', text: '[image unavailable]' })
+        } else {
+          parts.push({ type: 'image_url', image_url: { url } })
+        }
+      }
     }
     if (parts.length === 0) {
       const plain = typeof message.content === 'string' ? message.content : ''
@@ -216,6 +245,29 @@ function serializeMessages(messages) {
   // 兜底：没有 system 时补一个中性 system，保证首条是 system 角色。
   if (wire.length === 0 || wire[0].role !== 'system') wire.unshift({ role: 'system', content: NEUTRAL_SYSTEM })
   return wire
+}
+
+/**
+ * 收集消息里所有图片附件引用（含 tool-result 内嵌套的）。
+ * 返回 attachmentId → ImageAttachmentRef 的映射。
+ */
+function collectImageRefs(messages) {
+  const refs = new Map()
+  const walk = (blocks) => {
+    for (const block of blocks || []) {
+      if (!block || typeof block !== 'object') continue
+      if (block.type === 'image') {
+        const ref = block.attachment
+        if (ref && typeof ref.attachmentId === 'string') refs.set(ref.attachmentId, ref)
+        continue
+      }
+      if (Array.isArray(block.content)) walk(block.content)
+    }
+  }
+  for (const message of messages || []) {
+    if (Array.isArray(message?.content)) walk(message.content)
+  }
+  return refs
 }
 
 /**
@@ -296,10 +348,209 @@ export function apply(root, config = {}) {
   // Cordis 规定服务只能在 inject 作用域里取：直接读 root.llm / root.credentials
   // 会抛 "cannot get property ... without inject"，插件整条 entry 都装不上。
   // 依赖缺失时（比如组合里没有 llm）回调挂起而不会失败，正是需要的行为。
-  root.inject(['credentials', 'llm'], (scoped) => {
+  root.inject(['credentials', 'attachments', 'llm'], (scoped) => {
     teardown = install(scoped, cfg, logger)
   })
-  return () => { try { teardown?.() } catch { /* ignore */ } }
+  // 更新检查本身不需要模型服务，单独一条 inject：组合里没有 llm 时
+  // 用户仍然能查到有没有新版本。
+  let updateTeardown = () => {}
+  root.inject(['webServer'], (scoped) => {
+    updateTeardown = installUpdateRoutes(scoped, root, cfg, logger)
+  })
+  return () => {
+    try { teardown?.() } catch { /* ignore */ }
+    try { updateTeardown?.() } catch { /* ignore */ }
+  }
+}
+
+/** 运行中插件的安装目录（用来读当前版本）。 */
+function moduleDir() {
+  return path.dirname(fileURLToPath(import.meta.url))
+}
+
+/**
+ * 注册更新检查路由。
+ *
+ * `GET  /api/codebuddy/update`        只查版本，不改任何东西
+ * `POST /api/codebuddy/update`        确认更新，交给 pluginManager.installBundle
+ *
+ * 更新走官方 installBundle（内部是 pnpm），因此 lockfile 与实际安装一致，
+ * 也不会出现 OFM 那种「插件改了磁盘、pnpm 按旧 lockfile 又改回去」的损坏。
+ */
+function installUpdateRoutes(ctx, root, cfg, logger) {
+  const server = ctx.webServer
+  if (!server || typeof server.register !== 'function') return () => {}
+
+  const state = { last: null, checking: null }
+
+  async function check(force) {
+    const now = Date.now()
+    if (!force && state.last && now - state.last.checkedAt < 60_000) return state.last
+    if (state.checking) return state.checking
+    state.checking = (async () => {
+      const local = readLocalVersion(moduleDir())
+      const profileDir = profileDirFromEnv()
+      const source = profileDir === null ? { spec: null, kind: 'unknown' } : inspectInstallSource(profileDir)
+      try {
+        const remote = await fetchLatestVersion(fetch)
+        const verdict = evaluateUpdate(local, remote.version)
+        const payload = {
+          ok: true,
+          ...verdict,
+          checkedAt: remote.checkedAt,
+          installSource: source,
+          // 本地 link: 安装时不能自更新（会改到作者源码树），必须让用户重装
+          updatable: source.kind === 'git',
+          repo: REPO,
+          installSpec: INSTALL_SPEC,
+        }
+        state.last = payload
+        return payload
+      } catch (error) {
+        const payload = {
+          ok: false,
+          error: String(error && error.message || error),
+          localVersion: local,
+          checkedAt: Date.now(),
+          installSource: source,
+          updatable: source.kind === 'git',
+          repo: REPO,
+          installSpec: INSTALL_SPEC,
+        }
+        // 检查失败不缓存，下次立即重试
+        return payload
+      } finally {
+        state.checking = null
+      }
+    })()
+    return state.checking
+  }
+
+  async function applyUpdate() {
+    const manager = root.get?.('pluginManager') ?? root.pluginManager
+    if (!manager || typeof manager.installBundle !== 'function') {
+      return { ok: false, error: '当前组合没有 pluginManager，无法自动更新；请手动执行 dsh plugin --profile desktop add github:' + REPO }
+    }
+    const profileDir = profileDirFromEnv()
+    const source = profileDir === null ? { kind: 'unknown' } : inspectInstallSource(profileDir)
+    if (source.kind !== 'git') {
+      return {
+        ok: false,
+        error: source.kind === 'local'
+          ? '当前是本地目录安装（link:），自更新会改写源码树。请改用 github:' + REPO + ' 安装后再启用自更新。'
+          : '无法确认安装来源，已取消更新。',
+        installSource: source,
+      }
+    }
+    try {
+      const result = await manager.installBundle(INSTALL_SPEC, { enabled: true })
+      const applied = result?.application === 'applied'
+      logger.info?.(`[codebuddy] 自更新结果: ${result?.application ?? 'unknown'}`)
+      return {
+        ok: applied || result?.application === 'restart-required',
+        application: result?.application,
+        restartRequired: result?.application === 'restart-required',
+        version: result?.version,
+        error: result?.error?.diagnostic,
+        installSource: source,
+      }
+    } catch (error) {
+      return { ok: false, error: String(error && error.message || error), installSource: source }
+    }
+  }
+
+  const dispose = server.register({
+    kind: 'prefix',
+    path: '/api/codebuddy',
+    handler: async (request, response) => {
+      const url = new URL(request.url ?? '/', 'http://localhost')
+      const json = (status, body) => {
+        response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+        response.end(JSON.stringify(body))
+      }
+      try {
+        if (url.pathname === '/api/codebuddy/update') {
+          if (request.method === 'GET') {
+            return json(200, await check(url.searchParams.get('force') === '1'))
+          }
+          if (request.method === 'POST') {
+            return json(200, await applyUpdate())
+          }
+          return json(405, { ok: false, error: 'method not allowed' })
+        }
+        if (url.pathname === '/api/codebuddy/version') {
+          return json(200, { ok: true, version: readLocalVersion(moduleDir()), repo: REPO })
+        }
+        return json(404, { ok: false, error: 'not found' })
+      } catch (error) {
+        return json(500, { ok: false, error: String(error && error.message || error) })
+      }
+    },
+  })
+
+  // ---- 后台自动检查 ----
+  //
+  // 默认开启：启动后延迟一分钟查一次，之后每 intervalHours 小时一次。
+  // 只**检查**不自动装 —— 静默替换正在运行的插件代码会让使用者失去「我装的是
+  // 哪个版本」的掌控，而且 DSH 的部分场景更新需要重启才生效，静默处理会让人
+  // 以为已经好了。发现新版本时记一条 warn 日志（在 DSH 日志里可见），并让
+  // GET /api/codebuddy/update 立刻返回该结论。
+  const autoCfg = {
+    enabled: cfg.autoUpdate !== false,
+    intervalHours: Number(cfg.updateCheckHours) > 0 ? Number(cfg.updateCheckHours) : 6,
+    autoInstall: cfg.autoInstallUpdates === true,
+  }
+  let timer = null
+  if (autoCfg.enabled) {
+    const run = async () => {
+      try {
+        const result = await check(true)
+        if (!result.ok) {
+          logger.warn?.(`[codebuddy] 更新检查失败：${result.error}`)
+        } else if (result.available) {
+          logger.warn?.(`[codebuddy] 发现新版本 ${result.remoteVersion}（当前 ${result.localVersion}）。`
+            + (result.updatable ? ' 可在插件设置页更新，或 POST /api/codebuddy/update。'
+              : ' 当前为本地目录安装，请改用 github:' + REPO + ' 安装。'))
+          if (autoCfg.autoInstall && result.updatable) {
+            const applied = await applyUpdate()
+            logger.info?.(`[codebuddy] 自动更新${applied.ok ? '成功' : '失败'}：${applied.version ?? applied.error ?? ''}`)
+          }
+        }
+      } catch (error) {
+        logger.warn?.(`[codebuddy] 自动更新任务异常：${String(error && error.message || error)}`)
+      }
+    }
+    // 启动后先等一分钟：避开启动高峰，也让更新检查不影响首屏。
+    timer = setTimeout(run, 60_000)
+    timer.unref?.()
+    // 之后按配置间隔重复。用 interval 而非递归 setTimeout，避免
+    // 一次慢请求把后续检查整体推迟；unref 保证不阻止进程退出。
+    const periodMs = Math.max(1, autoCfg.intervalHours) * 3_600_000
+    const interval = setInterval(run, periodMs)
+    interval.unref?.()
+    timer = { initial: timer, interval }
+  }
+
+  return () => {
+    try {
+      if (timer && typeof timer === 'object') {
+        clearTimeout(timer.initial)
+        clearInterval(timer.interval)
+      } else if (timer !== null) {
+        clearTimeout(timer)
+      }
+    } catch { /* ignore */ }
+    try { dispose?.() } catch { /* ignore */ }
+  }
+}
+
+/** 从 DSH 环境变量推出 profile 目录（读依赖声明判断安装形态）。 */
+function profileDirFromEnv() {
+  const explicit = String(process.env.DSH_PROFILE_DIR || '').trim()
+  if (explicit) return explicit
+  const home = String(process.env.DSH_HOME || '').trim()
+  if (home) return path.join(home, 'profiles', 'desktop')
+  return null
 }
 
 function install(ctx, cfg, logger) {
@@ -505,13 +756,44 @@ function install(ctx, cfg, logger) {
     },
   }
 
+  /**
+   * 把消息里的图片附件读成 data URL（attachmentId → `data:<type>;base64,...`）。
+   *
+   * 走 attachments.readImageRequest：它按目标的宽高/字节预算生成请求版本，
+   * 比直接用原图更省 token，也避免超过上游体积限制。任一图读取失败就跳过
+   * 该图（序列化时会写成 `[image unavailable]`），不让单张坏图废掉整轮对话。
+   */
+  async function resolveImageUrls(messages, signal) {
+    const urls = new Map()
+    const refs = collectImageRefs(messages)
+    if (refs.size === 0) return urls
+    if (!ctx.attachments || typeof ctx.attachments.readImageRequest !== 'function') {
+      logger.warn?.('[codebuddy] 当前组合没有 attachments 服务，图片将被标记为不可用')
+      return urls
+    }
+    const limits = ctx.attachments.imageLimits || {}
+    const target = { width: IMAGE_MAX_DIMENSION, height: IMAGE_MAX_DIMENSION, maxBytes: IMAGE_MAX_BYTES }
+    void limits
+    for (const [id, ref] of refs) {
+      try {
+        const request = await ctx.attachments.readImageRequest(ref, target, signal)
+        if (!request || !request.data) continue
+        const base64 = Buffer.from(request.data).toString('base64')
+        urls.set(id, `data:${request.mediaType};base64,${base64}`)
+      } catch (error) {
+        logger.warn?.(`[codebuddy] 读取图片 ${id} 失败：${String(error && error.message || error)}`)
+      }
+    }
+    return urls
+  }
+
   async function* streamCall(options) {
     const credential = await ensureCredential()
     if (!credential || !credential.access_token) {
       throw new Error('codebuddy: 没有可用凭据，请先在 Channel Pack 登录 CodeBuddy 账号')
     }
 
-    const wire = serializeMessages(options.messages)
+    const wire = serializeMessages(options.messages, await resolveImageUrls(options.messages, options.signal))
     const body = { model: options.model, messages: wire, stream: true, prompt_cache_key: promptCacheKey }
     if (Array.isArray(options.tools) && options.tools.length > 0) {
       body.tools = options.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }))
