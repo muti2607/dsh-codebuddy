@@ -80,6 +80,9 @@ Illegal API invocation from an unapproved channel
   name: dsh-codebuddy
   config:
     credentialRef: ''   # 留空则自动从 channel-pack/state.json 找 provider=buddy 的账号
+    maxRetries: 0       # 上游 HTTP 失败后的自动重试次数；默认 0 = 不重试
+                        # （一次对话只打一次，避免失败被放大成重复调用刷屏；
+                        #   网络不稳可设 1，上限 5）
 ```
 
 ## 测试

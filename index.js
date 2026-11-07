@@ -479,7 +479,16 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
           return json(405, { ok: false, error: 'method not allowed' })
         }
         if (url.pathname === '/api/codebuddy/version') {
-          return json(200, { ok: true, version: readLocalVersion(moduleDir()), repo: REPO })
+          const dir = moduleDir()
+          return json(200, {
+            ok: true,
+            version: readLocalVersion(dir),
+            repo: REPO,
+            // 把实际加载路径暴露出来，便于确认运行的是安装副本还是开发目录
+            moduleDir: dir,
+            profileDir: profileDirFromEnv(),
+            installSource: inspectInstallSource(profileDirFromEnv() ?? ''),
+          })
         }
         return json(404, { ok: false, error: 'not found' })
       } catch (error) {
@@ -717,9 +726,14 @@ function install(ctx, cfg, logger) {
     },
 
     providerRetryPolicy() {
+      // 宿主按 `attempt <= maxRetries` 执行：0 = 失败不再补发请求。
+      // 默认 0 —— 一次对话只打 CodeBuddy 一次，出错直接把错误抛给上层处理，
+      // 避免瞬时失败被放大成一串重复调用。需要重试时配置 maxRetries: 1/2。
+      const raw = Number(cfg.maxRetries)
+      const maxRetries = Number.isSafeInteger(raw) && raw >= 0 ? Math.min(raw, 5) : 0
       return Object.freeze({
         mode: 'normal',
-        maxRetries: 1,
+        maxRetries,
         retryableCodes: Object.freeze(['EMPTY_RESPONSE', 'SERVER', 'TIMEOUT', 'TRANSPORT']),
         initialDelayMs: 800,
         maxDelayMs: 8000,

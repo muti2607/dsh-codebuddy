@@ -232,6 +232,8 @@ else {
   if (!info.id || !info.name) fail("providerInfo 形状不对")
   const policy = a.providerRetryPolicy()
   if (!Array.isArray(policy.retryableCodes)) fail("retryPolicy 形状不对")
+  // 默认零重试：一次对话只打一次上游，防止失败被放大成重复调用刷屏
+  if (policy.maxRetries !== 0) fail("默认 maxRetries 应为 0，实际 " + policy.maxRetries)
   const models = await a.listModels()
   if (models.length !== FALLBACK_MODELS.length) fail("listModels 数量不对: " + models.length)
   if (models[0].provider !== "codebuddy") fail("listModels provider 不对")
