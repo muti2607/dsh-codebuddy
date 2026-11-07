@@ -544,12 +544,32 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
   }
 }
 
-/** 从 DSH 环境变量推出 profile 目录（读依赖声明判断安装形态）。 */
+/**
+ * 定位 profile 目录（读依赖声明判断安装形态）。
+ *
+ * 优先用环境变量；但**宿主进程可能不把 DSH_PROFILE_DIR 传给插件**（实测在
+ * DSH 内部运行时它为空），因此再从模块自身位置推导：插件装在
+ * `<profile>/node_modules/dsh-codebuddy` 时，向上两级就是 profile。
+ * 两条路径都失败才返回 null。
+ */
 function profileDirFromEnv() {
   const explicit = String(process.env.DSH_PROFILE_DIR || '').trim()
   if (explicit) return explicit
   const home = String(process.env.DSH_HOME || '').trim()
-  if (home) return path.join(home, 'profiles', 'desktop')
+  if (home) {
+    const name = String(process.env.DSH_PROFILE || '').trim() || 'desktop'
+    return path.join(home, 'profiles', name)
+  }
+  // 从模块位置推导：<profile>/node_modules/dsh-codebuddy/src/updater.js
+  const self = moduleDir()
+  const candidate = path.resolve(self, '..', '..')
+  try {
+    const pkgPath = path.join(candidate, 'package.json')
+    if (fs.existsSync(pkgPath)) {
+      const doc = JSON.parse(fs.readFileSync(pkgPath, 'utf8'))
+      if (doc && typeof doc === 'object' && doc.dependencies !== undefined) return candidate
+    }
+  } catch { /* ignore */ }
   return null
 }
 
