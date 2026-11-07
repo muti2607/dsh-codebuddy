@@ -58,14 +58,15 @@ const code = [
   extract("sanitizeArgs", "fn"),
   extract("NEUTRAL_SYSTEM", "const"),
   extract("FALLBACK_MODELS", "const"),
+  extract("collectImageRefs", "fn"),
   extract("serializeMessages", "fn"),
   extract("normalizeArgs", "fn"),
   extract("buildHeaders", "fn"),
   extract("isExpired", "fn"),
-  "return { NEUTRAL_SYSTEM, FALLBACK_MODELS, serializeMessages, buildHeaders, isExpired, sanitizeText }",
+  "return { NEUTRAL_SYSTEM, FALLBACK_MODELS, serializeMessages, buildHeaders, isExpired, sanitizeText, collectImageRefs }",
 ].join("\n\n")
 const mod = new Function(code)()
-const { serializeMessages, buildHeaders, isExpired, NEUTRAL_SYSTEM, FALLBACK_MODELS, sanitizeText } = mod
+const { serializeMessages, buildHeaders, isExpired, NEUTRAL_SYSTEM, FALLBACK_MODELS, sanitizeText, collectImageRefs } = mod
 
 const fail = (m) => { console.error("FAIL: " + m); process.exitCode = 1 }
 
@@ -148,6 +149,43 @@ const bare = serializeMessages([
 const bareA = bare.find((m) => m.role === "assistant")
 if (!bareA || bareA.content !== null) fail("只有工具调用时 content 必须为 null")
 
+// ---- 2b. 图片块 ----
+{
+  const imgRef = { attachmentId: "att_1", mediaType: "image/png", bytes: 132, width: 32, height: 32 }
+  const withImg = [
+    { role: "user", content: [{ type: "text", text: "看这张图" }, { type: "image", attachment: imgRef }] },
+  ]
+  // 收集引用
+  const refs = collectImageRefs(withImg)
+  if (refs.size !== 1 || !refs.has("att_1")) fail("collectImageRefs 未收集到图片引用")
+
+  // 有映射 → image_url
+  const urls = new Map([["att_1", "data:image/png;base64,AAAA"]])
+  const w1 = serializeMessages(withImg, urls)
+  const userParts = w1.find((m) => m.role === "user")?.content
+  if (!Array.isArray(userParts)) fail("含图消息应为数组 content")
+  else {
+    const imgPart = userParts.find((p) => p.type === "image_url")
+    if (!imgPart) fail("图片未序列化成 image_url")
+    else if (!String(imgPart.image_url?.url || "").startsWith("data:image/png;base64,")) {
+      fail("图片 URL 不是 data URL: " + imgPart.image_url?.url)
+    }
+  }
+
+  // 无映射 → 明确的占位文本（不能让模型以为没图）
+  const w2 = serializeMessages(withImg, new Map())
+  const w2json = JSON.stringify(w2)
+  if (!w2json.includes("[image unavailable]")) fail("缺映射时应写 [image unavailable] 占位")
+
+  // 老式 imageUrl 字段不再被当作图片
+  const legacy = serializeMessages([{ role: "user", content: [{ type: "image", imageUrl: "http://x/y.png" }] }], new Map())
+  if (JSON.stringify(legacy).includes("http://x/y.png")) fail("不应信任无 attachment 的图片块")
+
+  // tool-result 内嵌图片也要能收集
+  const nested = [{ role: "tool", toolCallId: "t", content: [{ type: "tool-result", content: [{ type: "image", attachment: imgRef }] }] }]
+  if (collectImageRefs(nested).size !== 1) fail("未能收集 tool-result 内嵌图片")
+}
+
 // ---- 3. header ----
 const h = buildHeaders({ access_token: "AT", user_id: "u1", enterprise_id: "" })
 if (h["User-Agent"] !== "CodeBuddyIDE/1.106.1") fail("UA 不对")
@@ -175,6 +213,13 @@ const fake = {
     registerConfigurableProviders(entries) { fake.configurable = entries },
   },
   credentials: { async resolve() { return null }, async set() {} },
+  // 适配器会注入 attachments 读图；这里给一个能返回 1×1 PNG 的最小实现
+  attachments: {
+    imageLimits: { maxImageBytes: 4_000_000, maxImagesPerMessage: 8, maxMessageImageBytes: 16_000_000, maxImagePixels: 16_000_000, maxImageDimension: 4_000, mediaTypes: ["image/png"] },
+    async readImageRequest(ref) {
+      return { variantId: "v1", attachment: ref, data: new Uint8Array([137, 80, 78, 71]), mediaType: ref.mediaType, bytes: 4, width: ref.width, height: ref.height, depth: "uchar", space: "srgb", hasAlpha: false }
+    },
+  },
   // Cordis 的依赖注入：依赖齐备时才回调
   inject(deps, callback) { callback(fake); return () => {} },
 }
@@ -194,6 +239,15 @@ else {
   if (!rm.context || rm.context.contextWindow !== 1_000_000) fail("resolveModel context 不对: " + JSON.stringify(rm.context))
   if (!rm.defaultMaxTokens) fail("resolveModel defaultMaxTokens 缺失")
   if (!rm.reasoning || rm.reasoning.efforts.length === 0) fail("resolveModel reasoning 缺失")
+  // 图片支持必须如实声明，否则宿主会在添加图片时直接拒绝
+  if (!Array.isArray(rm.inputModalities) || !rm.inputModalities.includes("image")) {
+    fail("inputModalities 应包含 image，实际 " + JSON.stringify(rm.inputModalities))
+  }
+  if (!Array.isArray(models[0].inputModalities) || !models[0].inputModalities.includes("image")) {
+    fail("listModels 的 inputModalities 应包含 image")
+  }
+  // 支持图像就应给出计费/尺寸投影能力，避免宿主 spill 策略整条放弃
+  if (typeof a.imageRequestTarget !== "function") fail("缺 imageRequestTarget")
   const pc = await a.prepareCall("codebuddy", "deepseek-v4.1-flash")
   if (!pc.model || typeof pc.stream !== "function") fail("prepareCall 形状不对")
   // 没有凭据时 stream 必须明确报错
