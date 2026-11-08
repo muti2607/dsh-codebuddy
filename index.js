@@ -729,6 +729,8 @@ function install(ctx, cfg, logger) {
   const state = {
     credential: null,
     credentialRef: '',
+    // 多账号轮换游标：遇到限流/额度用尽就换下一个号
+    accountIndex: 0,
     credentialExpiresAt: 0,
     refreshing: null,
     models: null,
@@ -736,18 +738,46 @@ function install(ctx, cfg, logger) {
     meta: new Map(),
   }
 
-  function readAccountRef() {
-    if (credentialRefName) return credentialRefName
-    const home = dshHome()
-    if (!home) return ''
+  /**
+   * Channel Pack 里已启用且可用的 buddy 账号引用，按声明顺序。
+   * 配了 credentialRef 就只认那一个（用户显式指定，不做轮换）。
+   */
+  function readAccountRefs() {
+    if (credentialRefName) return [credentialRefName]
+    // 配置里的 dshHome 优先（可指向别的 profile 做测试/多开）
+    const home = String(cfg.dshHome || '').trim() || dshHome()
+    if (!home) return []
     const file = path.join(home, 'channel-pack', 'state.json')
     try {
       const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
-      const account = (doc.accounts || []).find((a) => a && a.provider === 'buddy' && a.enabled !== false)
-      return account ? String(account.credentialRef || '') : ''
+      return (doc.accounts || [])
+        .filter((a) => a && a.provider === 'buddy' && a.enabled !== false && a.credentialRef)
+        .map((a) => String(a.credentialRef))
     } catch {
-      return ''
+      return []
     }
+  }
+
+  function readAccountRef() {
+    const refs = readAccountRefs()
+    if (refs.length === 0) return ''
+    return refs[state.accountIndex % refs.length]
+  }
+
+  /**
+   * 换一个账号：限流(6004)/额度用尽(14018)时调用。
+   * 只有一个账号时返回 false（换不了，只能如实报错）。
+   */
+  function rotateAccount() {
+    const refs = readAccountRefs()
+    if (refs.length <= 1) return false
+    state.accountIndex = (state.accountIndex + 1) % refs.length
+    state.credential = null
+    state.credentialRef = ''
+    state.models = null
+    state.modelsAt = 0
+    logger.info?.(`[codebuddy] 切换账号 ${state.accountIndex + 1}/${refs.length} 后重试`)
+    return true
   }
 
   async function loadCredential() {
@@ -1011,13 +1041,30 @@ function install(ctx, cfg, logger) {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '')
-      // 频率限制：有明确解禁时间，重试只会继续撞墙
+      // 频率限制 / 额度用尽：先看能不能换个账号继续（多号时）。
+      // 换号成功就立刻用新凭据重发一次；只有一个账号时才如实报错。
       const rate = rateLimitInfo(text)
+      const quota = quotaExhaustedMessage(text)
+      if ((rate || quota) && rotateAccount()) {
+        const next = await ensureCredential()
+        if (next && next.access_token) {
+          const retried = await fetch(`${ENDPOINT}${CHAT_PATH}`, {
+            method: 'POST', headers: buildHeaders(next), body: bodyJson, signal: options.signal,
+          })
+          if (retried.ok) return yield* consumeSse(retried, options)
+          const t2 = await retried.text().catch(() => '')
+          // 换号后还失败：把新错误如实抛出（不再连环换号，避免打穿所有账号）
+          const r2 = rateLimitInfo(t2)
+          if (r2) throw new Error('codebuddy: ' + r2.message)
+          const q2 = quotaExhaustedMessage(t2)
+          if (q2) throw new Error('codebuddy: ' + q2)
+          throw new Error(`codebuddy: HTTP ${retried.status} ${t2.slice(0, 200)}`)
+        }
+      }
       if (rate) throw new Error('codebuddy: ' + rate.message)
       // 额度用尽：立刻停手，不做任何重试（等多久都不会恢复额度）。
       // 同时丢弃内存里的凭据：用户充值或换账号后，下一次请求会重新读取，
       // 不会继续拿旧账号的 token 报同一个错。
-      const quota = quotaExhaustedMessage(text)
       if (quota) {
         state.credential = null
         state.credentialRef = ''
