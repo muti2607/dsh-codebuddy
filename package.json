@@ -1,1 +1,49 @@
-ewogICJuYW1lIjogImRzaC1jb2RlYnVkZHkiLAogICJ2ZXJzaW9uIjogIjEuMS43IiwKICAidHlwZSI6ICJtb2R1bGUiLAogICJkZXNjcmlwdGlvbiI6ICLmiorohb7orq8gQ29kZUJ1ZGR577yIY29waWxvdC50ZW5jZW50LmNvbe+8ieeahOWFjei0ueaooeWei+aOpei/myBEU0gg5qih5Z6L6YCJ5oup5Zmo77yaRGVlcFNlZWsgLyBHTE0gLyBLaW1pIC8gTWluaU1heCDnrYnvvIzmlK/mjIHlm77niYfovpPlhaXvvIzlhoXnva7oh6rmm7TmlrDjgILlpI3nlKggQ2hhbm5lbCBQYWNrIOW3sueZu+W9leeahOi0puWPt+WHreaNruOAgiIsCiAgImtleXdvcmRzIjogWwogICAgImRzaCIsCiAgICAiZHNoLXBsdWdpbiIsCiAgICAiY29kZWJ1ZGR5IiwKICAgICJ0ZW5jZW50IiwKICAgICJmcmVlLW1vZGVsIiwKICAgICJsbG0tcHJvdmlkZXIiCiAgXSwKICAibGljZW5zZSI6ICJNSVQiLAogICJhdXRob3IiOiAibXV0aTI2MDciLAogICJyZXBvc2l0b3J5IjogewogICAgInR5cGUiOiAiZ2l0IiwKICAgICJ1cmwiOiAiZ2l0K2h0dHBzOi8vZ2l0aHViLmNvbS9tdXRpMjYwNy9kc2gtY29kZWJ1ZGR5LmdpdCIKICB9LAogICJob21lcGFnZSI6ICJodHRwczovL2dpdGh1Yi5jb20vbXV0aTI2MDcvZHNoLWNvZGVidWRkeSIsCiAgImJ1Z3MiOiB7CiAgICAidXJsIjogImh0dHBzOi8vZ2l0aHViLmNvbS9tdXRpMjYwNy9kc2gtY29kZWJ1ZGR5L2lzc3VlcyIKICB9LAogICJtYWluIjogIi4vaW5kZXguanMiLAogICJleHBvcnRzIjogewogICAgIi4iOiAiLi9pbmRleC5qcyIsCiAgICAiLi9sb2NhbGUvKi5qc29uIjogIi4vbG9jYWxlLyouanNvbiIsCiAgICAiLi9pY29uIjogIi4vaWNvbi5zdmciCiAgfSwKICAic2NyaXB0cyI6IHsKICAgICJ0ZXN0IjogIm5vZGUgdGVzdC92ZXJpZnktYWRhcHRlci5tanMgJiYgbm9kZSB0ZXN0L3ZlcmlmeS1zc2UubWpzICYmIG5vZGUgdGVzdC92ZXJpZnktdXBkYXRlci5tanMiCiAgfSwKICAiZmlsZXMiOiBbCiAgICAiaW5kZXguanMiLAogICAgInNyYy91cGRhdGVyLmpzIiwKICAgICJjb3JkaXMucGF0Y2gueW1sIiwKICAgICJsb2NhbGUvKi5qc29uIiwKICAgICJpY29uLnN2ZyIsCiAgICAiUkVBRE1FLm1kIiwKICAgICJMSUNFTlNFIiwKICAgICJ0ZXN0LyoubWpzIgogIF0sCiAgImljb24iOiAiLi9pY29uLnN2ZyIsCiAgImRzaCI6IHsKICAgICJidW5kbGUiOiB7CiAgICAgICJwYXRjaCI6ICIuL2NvcmRpcy5wYXRjaC55bWwiCiAgICB9CiAgfQp9Cg==
+{
+  "name": "dsh-codebuddy",
+  "version": "1.1.7",
+  "type": "module",
+  "description": "把腾讯 CodeBuddy（copilot.tencent.com）的免费模型接进 DSH 模型选择器：DeepSeek / GLM / Kimi / MiniMax 等，支持图片输入，内置自更新。复用 Channel Pack 已登录的账号凭据。",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "codebuddy",
+    "tencent",
+    "free-model",
+    "llm-provider"
+  ],
+  "license": "MIT",
+  "author": "muti2607",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muti2607/dsh-codebuddy.git"
+  },
+  "homepage": "https://github.com/muti2607/dsh-codebuddy",
+  "bugs": {
+    "url": "https://github.com/muti2607/dsh-codebuddy/issues"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "scripts": {
+    "test": "node test/verify-adapter.mjs && node test/verify-sse.mjs && node test/verify-updater.mjs"
+  },
+  "files": [
+    "index.js",
+    "src/updater.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "test/*.mjs"
+  ],
+  "icon": "./icon.svg",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
