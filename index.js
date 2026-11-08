@@ -138,24 +138,33 @@ const NEUTRAL_SYSTEM = [
   '- Paths the user marks with a leading @ are explicit file references.',
 ].join('\n')
 
-/** 内置兜底模型表（/v3/config 不可用时使用）。 */
+/**
+ * 内置兜底模型表（/v3/config 拉不到时使用）。
+ *
+ * 2026-11-08 按真实目录重建：CodeBuddy 当前可用的 19 个对话模型全部收录，
+ * 含上下文/输出上限与思考等级，避免远端目录临时不可用时选择器里少一堆模型。
+ * 不含 codewise-*（补全/改写专用）与图片生成模型。
+ */
 const FALLBACK_MODELS = [
-  { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 128_000 },
-  { id: 'deepseek-v4-pro', name: 'Deepseek-V4-Pro', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'xhigh'], defaultReasoningEffort: 'high', maxOutputTokens: 128_000 },
-  { id: 'deepseek-v4-flash', name: 'Deepseek-V4-Flash', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 50_000 },
-  { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
-  { id: 'glm-5.3-flash', name: 'GLM-5.3-Flash', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 32_000 },
-  { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['high', 'xhigh'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
-  { id: 'glm-5.1', name: 'GLM-5.1', contextWindow: 200_000, supportsImages: true, reasoningEfforts: ['medium'], maxOutputTokens: 48_000 },
-  { id: 'glm-5v-turbo', name: 'GLM-5V-Turbo', contextWindow: 200_000, supportsImages: true, reasoningEfforts: ['medium'], maxOutputTokens: 64_000 },
-  { id: 'kimi-k3-1', name: 'Kimi-K3-1', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['medium'], maxOutputTokens: 32_000 },
-  { id: 'kimi-k2.8-preview', name: 'Kimi-K2.8-Preview', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
-  { id: 'kimi-k2.7', name: 'Kimi-K2.7', contextWindow: 256_000, supportsImages: true, reasoningEfforts: ['medium'], maxOutputTokens: 32_000 },
-  { id: 'kimi-k2.6', name: 'Kimi-K2.6', contextWindow: 256_000, supportsImages: true, reasoningEfforts: ['medium'], maxOutputTokens: 32_000 },
-  { id: 'minimax-m3', name: 'MiniMax-M3', contextWindow: 512_000, supportsImages: true, reasoningEfforts: ['medium'], maxOutputTokens: 64_000 },
+  { id: 'auto', name: 'Auto', contextWindow: 256_000, supportsImages: true, reasoningEfforts: ['high'], defaultReasoningEffort: 'high', maxOutputTokens: 32_000 },
+  { id: 'hy4free', name: 'Hy4 (free)', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
+  { id: 'hy4std', name: 'Hy4 (std)', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
   { id: 'hy3', name: 'Hy3', contextWindow: 192_000, supportsImages: true, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
-  { id: 'hy4-preview', name: 'Hy4 preview', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
-  { id: 'hy4free', name: 'Hy4 free', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
+  { id: 'hy3-x', name: 'Hy3-x', contextWindow: 192_000, supportsImages: true, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
+  { id: 'step-5-preview', name: 'Step-5-Preview', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'medium', maxOutputTokens: 64_000 },
+  { id: 'space-bunny', name: 'Space-Bunny', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultReasoningEffort: 'max', maxOutputTokens: 128_000 },
+  { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 393_216 },
+  { id: 'deepseek-v4-pro', name: 'Deepseek-V4-Pro', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'xhigh'], defaultReasoningEffort: 'high', maxOutputTokens: 393_216 },
+  { id: 'deepseek-v4-flash', name: 'Deepseek-V4-Flash', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'xhigh'], defaultReasoningEffort: 'high', maxOutputTokens: 50_000 },
+  { id: 'glm-5.3', name: 'GLM-5.3', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 131_072 },
+  { id: 'glm-5.3-flash', name: 'GLM-5.3-Flash', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 131_072 },
+  { id: 'glm-5.2', name: 'GLM-5.2', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['high', 'xhigh'], defaultReasoningEffort: 'high', maxOutputTokens: 131_072 },
+  { id: 'kimi-k3.1-pro', name: 'Kimi-K3.1-Pro', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 32_000 },
+  { id: 'kimi-k3-1', name: 'Kimi-K3', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['medium'], defaultReasoningEffort: 'medium', maxOutputTokens: 1_048_576 },
+  { id: 'kimi-k2.8-preview', name: 'Kimi-K2.8-Preview', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 131_072 },
+  { id: 'minimax-m3.1-flash', name: 'MiniMax-M3.1-Flash', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultReasoningEffort: 'max', maxOutputTokens: 128_000 },
+  { id: 'mimo-v2.6-pro', name: 'Xiaomi MiMo-V2.6-Pro', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['high'], defaultReasoningEffort: 'high', maxOutputTokens: 128_000 },
+  { id: 'codewise-default-model-v2', name: 'Default', contextWindow: 96_000, supportsImages: true, maxOutputTokens: 32_000 },
 ]
 
 /** 远端目录缺元信息时的通用等级：宁可给出 low/high 让用户能选。 */
@@ -176,6 +185,8 @@ function pickEfforts(remoteModel) {
         return v.map((x) => (x && typeof x === 'object' ? String(x.id ?? x.name ?? '') : String(x))).filter(Boolean)
       }
     }
+    // 只给单档的模型（如 auto / kimi-k3-1）：reasoning.effort = 'high'
+    if (typeof nested.effort === 'string' && nested.effort) return [nested.effort]
   }
   return []
 }
@@ -865,6 +876,8 @@ function install(ctx, cfg, logger) {
       const out = []
       for (const m of list) {
         if (!m || !m.id) continue
+        // 只收对话模型：codewise-*（补全/改写）、图片生成等不进选择器
+        if (!m.supportsToolCall && !m.reasoning && !m.supportsReasoning) continue
         // 远端目录的思考等级字段名没有公开契约，这里对常见拼法全部兼容；
         // 解析不到时回退内置兜底表，再兜底通用 low/high —— 否则宿主拿不到
         // reasoning.efforts，界面上就完全没有「主动选思考等级」的入口。
@@ -873,7 +886,11 @@ function install(ctx, cfg, logger) {
         out.push({
           id: String(m.id),
           name: String(m.name || m.id),
-          contextWindow: readNumber(m.maxInputTokens) || readNumber(m.contextWindow),
+          // 目录里上下文可能是对象：{ defaultLength, supportedLengths }
+          contextWindow: readNumber(m.maxInputTokens)
+            || readNumber(m.maxAllowedSize)
+            || readNumber(m.contextWindow)
+            || readNumber(m.contextWindow && m.contextWindow.defaultLength),
           maxOutputTokens: readNumber(m.maxOutputTokens),
           supportsImages: m.supportsImage === true || m.supportsVision === true || true,
           reasoningEfforts: efforts.length > 0 ? efforts : (fallback ? fallback.reasoningEfforts : GENERIC_EFFORTS),

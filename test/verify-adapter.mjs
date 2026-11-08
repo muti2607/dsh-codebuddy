@@ -241,10 +241,10 @@ else {
   if (!rm.context || rm.context.contextWindow !== 1_000_000) fail("resolveModel context 不对: " + JSON.stringify(rm.context))
   if (!rm.defaultMaxTokens) fail("resolveModel defaultMaxTokens 缺失")
   if (!rm.reasoning || rm.reasoning.efforts.length === 0) fail("resolveModel reasoning 缺失")
-  // hy4free 只有兜底表里有：界面必须给出可选等级，否则用户无法主动选思考等级
+  // hy4free：真实目录只给一档 high，但必须声明出等级（否则界面没有选择器）
   {
     const rh = await a.resolveModel("codebuddy", "hy4free")
-    if (!rh.reasoning || !Array.isArray(rh.reasoning.efforts) || rh.reasoning.efforts.length < 2) {
+    if (!rh.reasoning || !Array.isArray(rh.reasoning.efforts) || rh.reasoning.efforts.length < 1) {
       fail("hy4free 应声明可选思考等级，实际 " + JSON.stringify(rh.reasoning))
     }
     if (rh.reasoning && rh.reasoning.defaultEffort !== "high") fail("hy4free 默认等级应为 high")
