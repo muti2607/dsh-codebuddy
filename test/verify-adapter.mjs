@@ -298,6 +298,29 @@ dispose()
   }
   // 普通 429（非额度）仍可重试，别误伤
   if (quotaExhaustedMessage('{"code":429,"msg":"too many requests"}')) fail("普通限流不该判成额度用尽")
+
+  // 频率限制 6004：有明确解禁时间，必须识别出来并禁止重试
+  {
+    const { rateLimitInfo } = await import("../index.js")
+    const t6004 = JSON.stringify({
+      code: 6004,
+      msg: "您的使用量已超出频率限制，将在 2026-11-08 18:24:35 UTC+8 重置，您也可以切换其他模型继续使用。",
+      requestId: "x",
+    })
+    const r = rateLimitInfo(t6004)
+    if (!r || !/频率限制/.test(r.message)) fail("6004 应识别为频率限制，实际: " + JSON.stringify(r))
+    if (!r || r.resetMs <= 0) fail("应解析出解禁时间，实际: " + JSON.stringify(r))
+    const want = Date.parse("2026-11-08T18:24:35+08:00")
+    if (r.resetMs !== want) fail("解禁时间解析不对: " + r.resetMs + " != " + want)
+    if (!/重置|切换/.test(r.message)) fail("频率限制提示应说明解禁时间/建议换模型，实际: " + r.message)
+    if (await shouldRetryTransient(t6004, mkRes(429, { "retry-after": "1" }))) {
+      fail("频率限制即便 429+Retry-After 也不该重试")
+    }
+    // 不该被误判成额度用尽（两者处置不同：额度要充值、限流只需等）
+    if (quotaExhaustedMessage(t6004)) fail("6004 不该判成额度用尽")
+    // 普通 11134 也不会被误判成限流
+    if (rateLimitInfo(t11134)) fail("11134 不该判成频率限制")
+  }
 }
 
 console.log(JSON.stringify({ ok: !process.exitCode, models: FALLBACK_MODELS.length, neutralSystemChars: NEUTRAL_SYSTEM.length }, null, 2))

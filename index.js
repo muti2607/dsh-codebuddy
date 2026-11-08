@@ -203,6 +203,46 @@ function readNumber(value) {
 }
 
 /**
+ * 识别「频率限制」类错误（有明确解禁时间，等待期间重试全是白打）。
+ *
+ * 实测 2026-11-08：返回 HTTP 429 + code 6004，形如
+ * {"code":6004,"msg":"您的使用量已超出频率限制，将在 2026-11-08 18:24:35 UTC+8 重置，
+ *  您也可以切换其他模型继续使用。"}
+ * 解禁可能要等十几分钟，远超一次请求的合理等待，所以立即失败并如实告知。
+ *
+ * @returns {{ message: string, resetMs: number } | null}
+ */
+export function rateLimitInfo(errorBodyText) {
+  let code = null
+  let msg = ''
+  try {
+    const p = JSON.parse(String(errorBodyText || ''))
+    const d = (p && (p.error && (p.error.data || p.error))) || p || {}
+    const c = d.code !== undefined ? d.code : p && p.code
+    if (c !== undefined && c !== null && Number.isFinite(Number(c))) code = Number(c)
+    msg = String((d.msg !== undefined ? d.msg : (p && p.msg)) || '')
+  } catch { /* 非 JSON：下面按文本兜底 */ }
+  const text = msg || String(errorBodyText || '')
+  const hit = code === 6004 || /频率限制|rate\s*limit|too\s*many\s*requests|请求过于频繁/i.test(text)
+  if (!hit) return null
+  let resetMs = 0
+  const m = text.match(/将在\s*(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/)
+  if (m) {
+    const parsed = Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}+08:00`)
+    if (Number.isFinite(parsed)) resetMs = parsed
+  }
+  const when = resetMs > 0
+    ? new Date(resetMs).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })
+    : ''
+  return {
+    resetMs,
+    message: 'CodeBuddy 触发频率限制' + (code !== null ? '（code ' + code + '）' : '')
+      + (when ? '，额度将于 ' + when + ' 重置' : '')
+      + '。重试只会继续撞墙，请稍后再试，或在本会话切换到其他模型/渠道。',
+  }
+}
+
+/**
  * 识别「额度用尽」类错误（非瞬时故障，重试无意义）。
  *
  * 实测 2026-11-08：免费额度耗尽时返回 HTTP 429 + code 14018，
@@ -242,8 +282,9 @@ export function quotaExhaustedMessage(errorBodyText) {
  * 避免失败被无声放大成刷屏调用。
  */
 export async function shouldRetryTransient(errorBodyText, response, signal) {
-  // 额度用尽不是瞬时故障，重试只会白等
+  // 额度用尽 / 频率限制都不是瞬时故障，重试只会白等或继续撞墙
   if (quotaExhaustedMessage(errorBodyText)) return false
+  if (rateLimitInfo(errorBodyText)) return false
   let wants = false
   let waitMs = 1500
   try {
@@ -970,6 +1011,9 @@ function install(ctx, cfg, logger) {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '')
+      // 频率限制：有明确解禁时间，重试只会继续撞墙
+      const rate = rateLimitInfo(text)
+      if (rate) throw new Error('codebuddy: ' + rate.message)
       // 额度用尽：立刻停手，不做任何重试（等多久都不会恢复额度）。
       // 同时丢弃内存里的凭据：用户充值或换账号后，下一次请求会重新读取，
       // 不会继续拿旧账号的 token 报同一个错。
