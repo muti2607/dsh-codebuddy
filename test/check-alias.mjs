@@ -1,10 +1,11 @@
-// 确认 codebuddy 适配器以 codebuddy + buddy 两个名字注册
+// 确认适配器注册了哪些 provider（主渠道 + 别名）
 import { apply } from '../index.js'
-let reg = null
+
+const regs = []
 const fake = {
-  logger: { info: () => {}, warn: () => {} },
+  logger: { info: () => {}, warn: console.warn },
   llm: {
-    registerAdapter(providers, adapter) { reg = { providers, adapter }; return { dispose() {} } },
+    registerAdapter(providers, adapter) { regs.push({ providers, adapter }); return { dispose() {} } },
     registerConfigurableProviders() {},
   },
   credentials: { async resolve() { return null }, async set() {} },
@@ -13,8 +14,11 @@ const fake = {
   get(n) { return fake[n] },
 }
 apply(fake, { dshHome: 'D:/__none__' })
-console.log('注册的 provider:', JSON.stringify(reg && reg.providers))
-const models = await reg.adapter.listModels('buddy')
-console.log('buddy 下模型数:', models.length, '示例:', models.slice(0, 3).map((m) => m.provider + '/' + m.id).join(', '))
-const one = models.find((m) => m.id === 'glm-5.3')
-console.log('buddy/glm-5.3 是否存在:', !!one)
+
+const all = regs.flatMap((r) => r.providers)
+console.log('注册的 provider:', JSON.stringify(all))
+const adapter = regs[0] && regs[0].adapter
+const models = await adapter.listModels('codebuddy')
+console.log('codebuddy 下模型数:', models.length)
+console.log('示例:', models.slice(0, 3).map((m) => m.provider + '/' + m.id).join(', '))
+console.log('buddy/glm-5.3 可解析:', !!models.find((m) => m.id === 'glm-5.3'))

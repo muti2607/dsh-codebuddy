@@ -206,10 +206,16 @@ for (const need of ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3-1"]) if (!ids.has
 // ---- 6. 适配器契约（用假 ctx 跑 apply） ----
 const { apply } = await import(new URL("../index.js", import.meta.url).href)
 let registered = null
+const allRegistrations = []
 const fake = {
   logger: { info: () => {}, warn: () => {} },
   llm: {
-    registerAdapter(providers, adapter) { registered = { providers, adapter }; return { dispose() { registered = null } } },
+    // 适配器会注册主渠道 + 别名，全部收集；registered 保留第一次（主渠道）
+    registerAdapter(providers, adapter) {
+      if (!registered) registered = { providers, adapter }
+      allRegistrations.push({ providers, adapter })
+      return { dispose() {} }
+    },
     registerConfigurableProviders(entries) { fake.configurable = entries },
   },
   credentials: { async resolve() { return null }, async set() {} },

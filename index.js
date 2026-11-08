@@ -1314,20 +1314,65 @@ function install(ctx, cfg, logger) {
     return () => {}
   }
 
-  // 额外渠道别名：同一个适配器可以同时以多个 provider 名注册，
-  // 这样 `buddy/glm-5.3` 这类 id 也能直接解析（默认加一个 buddy 别名）。
+  // 主渠道必须先注册成功：任何附加尝试都不能连累它，
+  // 否则一旦 provider 名冲突，宿主会整条拒绝，用户看到的就是「模型全没了」。
+  const registration = ctx.llm.registerAdapter([PROVIDER], adapter)
+  ctx.llm.registerConfigurableProviders?.([
+    { provider: PROVIDER, displayName: DISPLAY_NAME, settingsNs: PROVIDER, settingsPath: [] },
+  ])
+
+  // 额外别名（可选）：让 `buddy/glm-5.3` 这类 id 也能解析。
+  // 逐个独立 try/catch —— 名字被别的插件占用时只跳过该别名。
   const extraAliases = Array.isArray(cfg.aliases)
     ? cfg.aliases.map((x) => String(x || '').trim()).filter(Boolean)
     : ['buddy']
-  const providerIds = [PROVIDER, ...extraAliases.filter((x) => x !== PROVIDER)]
-  const registration = ctx.llm.registerAdapter(providerIds, adapter)
-  ctx.llm.registerConfigurableProviders?.(providerIds.map((id) => (
-    { provider: id, displayName: DISPLAY_NAME, settingsNs: PROVIDER, settingsPath: [] }
-  )))
-  logger.info?.(`[codebuddy] 已注册 CodeBuddy 渠道 ${providerIds.join('/')}（${FALLBACK_MODELS.length} 个兜底模型，凭据复用 Channel Pack 的 buddy 账号）`)
+  const aliasRegistrations = []
+  const aliasOk = []
+  for (const alias of extraAliases) {
+    if (!alias || alias === PROVIDER) continue
+    try {
+      aliasRegistrations.push(ctx.llm.registerAdapter([alias], adapter))
+      aliasOk.push(alias)
+    } catch (error) {
+      logger.warn?.(`[codebuddy] 别名渠道 ${alias} 注册失败（可能已被其他插件占用），已跳过：${String((error && error.message) || error)}`)
+    }
+  }
+  logger.info?.(`[codebuddy] 已注册 CodeBuddy 渠道 ${[PROVIDER, ...aliasOk].join('/')}（${FALLBACK_MODELS.length} 个兜底模型，凭据复用 Channel Pack 的 buddy 账号）`)
+
+  // 自检路由：确认渠道与模型确实挂上了（排查「模型没了」这类问题用）
+  ctx.inject(['webServer'], (scoped) => {
+    const server = scoped && scoped.webServer ? scoped.webServer
+      : (typeof ctx.get === 'function' ? ctx.get('webServer') : null)
+    if (!server || typeof server.register !== 'function') return () => {}
+    try {
+      return server.register({
+        kind: 'exact',
+        path: '/api/codebuddy/self-check',
+        handler: (_req, res) => {
+          const body = JSON.stringify({
+            ok: true,
+            version: readLocalVersion(moduleDir()),
+            providers: [PROVIDER, ...aliasOk],
+            failedAliases: extraAliases.filter((a) => a && a !== PROVIDER && !aliasOk.includes(a)),
+            fallbackModels: FALLBACK_MODELS.length,
+            cachedModels: Array.isArray(state.models) ? state.models.length : 0,
+            hasCredential: !!state.credential,
+          })
+          res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+          res.end(body)
+        },
+      })
+    } catch (error) {
+      logger.warn?.('[codebuddy] 自检路由注册失败：' + String((error && error.message) || error))
+      return () => {}
+    }
+  })
 
   return () => {
     try { if (registration && typeof registration.dispose === 'function') registration.dispose()
       else if (typeof registration === 'function') registration() } catch { /* ignore */ }
+    for (const r of aliasRegistrations) {
+      try { if (r && typeof r.dispose === 'function') r.dispose() } catch { /* ignore */ }
+    }
   }
 }
