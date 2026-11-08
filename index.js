@@ -960,10 +960,12 @@ function install(ctx, cfg, logger) {
       return { width: image?.width ?? 0, height: image?.height ?? 0, maxBytes: image?.bytes ?? 0 }
     },
 
-    async listModels() {
+    async listModels(provider) {
       const list = await ensureModels()
+      // 用调用方给的 provider 名回填，别名（如 buddy）才不会串成 codebuddy
+      const pid = provider || PROVIDER
       return list.map((m) => ({
-        provider: PROVIDER,
+        provider: pid,
         id: m.id,
         name: m.name,
         inputModalities: MODALITIES,
@@ -1312,11 +1314,17 @@ function install(ctx, cfg, logger) {
     return () => {}
   }
 
-  const registration = ctx.llm.registerAdapter([PROVIDER], adapter)
-  ctx.llm.registerConfigurableProviders?.([
-    { provider: PROVIDER, displayName: DISPLAY_NAME, settingsNs: PROVIDER, settingsPath: [] },
-  ])
-  logger.info?.(`[codebuddy] 已注册 CodeBuddy 渠道（${FALLBACK_MODELS.length} 个兜底模型，凭据复用 Channel Pack 的 buddy 账号）`)
+  // 额外渠道别名：同一个适配器可以同时以多个 provider 名注册，
+  // 这样 `buddy/glm-5.3` 这类 id 也能直接解析（默认加一个 buddy 别名）。
+  const extraAliases = Array.isArray(cfg.aliases)
+    ? cfg.aliases.map((x) => String(x || '').trim()).filter(Boolean)
+    : ['buddy']
+  const providerIds = [PROVIDER, ...extraAliases.filter((x) => x !== PROVIDER)]
+  const registration = ctx.llm.registerAdapter(providerIds, adapter)
+  ctx.llm.registerConfigurableProviders?.(providerIds.map((id) => (
+    { provider: id, displayName: DISPLAY_NAME, settingsNs: PROVIDER, settingsPath: [] }
+  )))
+  logger.info?.(`[codebuddy] 已注册 CodeBuddy 渠道 ${providerIds.join('/')}（${FALLBACK_MODELS.length} 个兜底模型，凭据复用 Channel Pack 的 buddy 账号）`)
 
   return () => {
     try { if (registration && typeof registration.dispose === 'function') registration.dispose()
