@@ -214,6 +214,46 @@ function readNumber(value) {
 }
 
 /**
+ * 判定 fetch 抛出的错误是不是「连接层死亡」而非请求本身的问题。
+ *
+ * Node fetch 网络层失败一律包成 TypeError: fetch failed，真因在 e.cause：
+ * ECONNRESET / ECONNREFUSED / ENOTFOUND / EAI_AGAIN / ETIMEDOUT /
+ * UND_ERR_SOCKET / socket hang up —— 都是连接没建立或中途被掐，
+ * 重发（换一条连接）有意义；HTTP 状态类错误不带这些 code，不误伤。
+ */
+export function isConnectionDeath(error) {
+  const parts = []
+  let node = error
+  for (let depth = 0; node && depth < 4; depth++) {
+    parts.push(String(node.code || ''), String(node.message || ''))
+    node = node.cause
+  }
+  return /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EPIPE|UND_ERR_SOCKET|UND_ERR_CONNECT|socket hang up|fetch failed/i.test(parts.join(' '))
+}
+
+/**
+ * 发一次 chat 请求，带「死连接自愈」。
+ *
+ * 长对话间隔后，连接池里可能留着一条被服务端静默关掉的 keep-alive 死连接：
+ * 请求发上去直接 `fetch failed`（ECONNRESET / socket hang up），且发生在流
+ * 未开始时——换一条连接重发必定能成，所以等 400ms（让池子先清掉死连接）
+ * 精确补发一次，用户感知不到。非连接类错误不吞，照常上抛。
+ */
+async function fetchPost(bodyJson, credential, signal) {
+  const send = () => fetch(`${ENDPOINT}${CHAT_PATH}`, {
+    method: 'POST', headers: buildHeaders(credential), body: bodyJson, signal,
+  })
+  try {
+    return await send()
+  } catch (error) {
+    if (signal?.aborted || !isConnectionDeath(error)) throw error
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    if (signal?.aborted) throw error
+    return send()
+  }
+}
+
+/**
  * 识别「频率限制」类错误（有明确解禁时间，等待期间重试全是白打）。
  *
  * 实测 2026-11-08：返回 HTTP 429 + code 6004，形如
@@ -1054,9 +1094,14 @@ function install(ctx, cfg, logger) {
     }
 
     const bodyJson = JSON.stringify(body)
-    let response = await fetch(`${ENDPOINT}${CHAT_PATH}`, {
-      method: 'POST', headers: buildHeaders(credential), body: bodyJson, signal: options.signal,
-    })
+
+    // 长对话间隔后，连接池里可能留着一条被服务端静默关掉的 keep-alive 死
+    // 连接：请求发上去直接 `fetch failed`（ECONNRESET / socket hang up），
+    // 且发生在流未开始时——换一条连接重发必定能成，所以精确补发一次
+    // （间隔 400ms，让池子先把死连接清掉），用户感知不到。
+    // 非连接类错误不吞，照常上抛。
+    // fetchPost 已带死连接自愈（精确补发一次），这里直接发即可
+    let response = await fetchPost(bodyJson, credential, options.signal)
 
     if (!response.ok) {
       const text = await response.text().catch(() => '')
@@ -1067,9 +1112,7 @@ function install(ctx, cfg, logger) {
       if ((rate || quota) && rotateAccount()) {
         const next = await ensureCredential()
         if (next && next.access_token) {
-          const retried = await fetch(`${ENDPOINT}${CHAT_PATH}`, {
-            method: 'POST', headers: buildHeaders(next), body: bodyJson, signal: options.signal,
-          })
+          const retried = await fetchPost(bodyJson, next, options.signal)
           if (retried.ok) return yield* consumeSse(retried, options)
           const t2 = await retried.text().catch(() => '')
           // 换号后还失败：把新错误如实抛出（不再连环换号，避免打穿所有账号）
@@ -1094,9 +1137,7 @@ function install(ctx, cfg, logger) {
         state.credential = null
         const fresh = await ensureCredential()
         if (fresh && fresh.access_token !== credential.access_token) {
-          const retry = await fetch(`${ENDPOINT}${CHAT_PATH}`, {
-            method: 'POST', headers: buildHeaders(fresh), body: bodyJson, signal: options.signal,
-          })
+          const retry = await fetchPost(bodyJson, fresh, options.signal)
           if (retry.ok) return yield* consumeSse(retry, options)
           const rt = await retry.text().catch(() => '')
           throw new Error(`codebuddy: HTTP ${retry.status} ${rt.slice(0, 200)}`)
@@ -1107,9 +1148,7 @@ function install(ctx, cfg, logger) {
       // 这层与宿主 maxRetries 相互独立：官方意愿优先精确补发一次，
       // 官方没表态的（网络断/超时）由宿主策略补发一次。
       if (await shouldRetryTransient(text, response, options.signal)) {
-        response = await fetch(`${ENDPOINT}${CHAT_PATH}`, {
-          method: 'POST', headers: buildHeaders(credential), body: bodyJson, signal: options.signal,
-        })
+        response = await fetchPost(bodyJson, credential, options.signal)
         if (response.ok) return yield* consumeSse(response, options)
         const t2 = await response.text().catch(() => '')
         throw new Error(`codebuddy: HTTP ${response.status} ${t2.slice(0, 200)}`)
