@@ -145,12 +145,15 @@ const NEUTRAL_SYSTEM = [
  * 含上下文/输出上限与思考等级，避免远端目录临时不可用时选择器里少一堆模型。
  * 不含 codewise-*（补全/改写专用）与图片生成模型。
  */
-const FALLBACK_MODELS = [
+export const FALLBACK_MODELS = [
   { id: 'auto', name: 'Auto', contextWindow: 256_000, supportsImages: true, reasoningEfforts: ['high'], defaultReasoningEffort: 'high', maxOutputTokens: 32_000 },
   { id: 'hy4free', name: 'Hy4 (free)', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
   { id: 'hy4std', name: 'Hy4 (std)', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
-  { id: 'hy3', name: 'Hy3', contextWindow: 192_000, supportsImages: true, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
-  { id: 'hy3-x', name: 'Hy3-x', contextWindow: 192_000, supportsImages: true, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 64_000 },
+  // 目录标 maxInputTokens=192000，但服务端对 prompt 单独卡 100000
+  // （实测 code 11115: 100001 > 100000 maximum）。按真实上限声明，
+  // 宿主的自动压缩才会在 80% 就触发，不会等撞墙。
+  { id: 'hy3', name: 'Hy3', contextWindow: 100_000, supportsImages: true, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 32_000 },
+  { id: 'hy3-x', name: 'Hy3-x', contextWindow: 100_000, supportsImages: true, reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'high', maxOutputTokens: 32_000 },
   { id: 'step-5-preview', name: 'Step-5-Preview', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'medium', 'high'], defaultReasoningEffort: 'medium', maxOutputTokens: 64_000 },
   { id: 'space-bunny', name: 'Space-Bunny', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultReasoningEffort: 'max', maxOutputTokens: 128_000 },
   { id: 'deepseek-v4.1-flash', name: 'Deepseek-V4.1-Flash', contextWindow: 1_000_000, supportsImages: true, reasoningEfforts: ['low', 'high', 'max'], defaultReasoningEffort: 'high', maxOutputTokens: 393_216 },
@@ -294,6 +297,41 @@ export function rateLimitInfo(errorBodyText) {
 }
 
 /**
+ * 识别「prompt 超长」类错误（服务端硬上限，重试无意义）。
+ *
+ * 实测 2026-11-14：hy3 返回 HTTP 400 + code 11115，
+ * "prompt is too long: 100001 tokens > 100000 maximum"，
+ * 且 retry_policy.retry=false、extError.code=context_length_exceeded。
+ *
+ * 注意：目录里 hy3 的 maxInputTokens 写 192000，但服务端对 prompt
+ * 单独卡 100000 —— 因此不能只信目录，需把这类错误如实告诉用户，
+ * 并把兜底表里该模型的窗口修正为服务端的真实上限。
+ */
+export function promptTooLongMessage(errorBodyText) {
+  let code = null
+  let msg = ''
+  try {
+    const p = JSON.parse(String(errorBodyText || ''))
+    const d = (p && (p.error && (p.error.data || p.error))) || p || {}
+    const c = d.code !== undefined ? d.code : p && p.code
+    if (c !== undefined && c !== null && Number.isFinite(Number(c))) code = Number(c)
+    msg = String((d.msg !== undefined ? d.msg : (p && p.msg)) || '')
+  } catch { /* 非 JSON：按文本兜底 */ }
+  const raw = String(errorBodyText || '')
+  const text = msg + ' ' + raw
+  const hit = code === 11115
+    || /prompt is too long|context_length_exceeded|maximum context|input tokens.*exceed/i.test(text)
+  if (!hit) return ''
+  const m = text.match(/(\d[\d,]*)\s*tokens?\s*>\s*(\d[\d,]*)\s*maximum/i)
+  const detail = m
+    ? `（本轮 ${Number(m[1]).toLocaleString()} tokens，该模型上限 ${Number(m[2]).toLocaleString()}）`
+    : ''
+  return `输入超长${detail}，重试无用（官方 retry=false）。`
+    + '请开一个新会话清空累积历史，或换长上下文模型（如 hy4free / codebuddy 的 1M 窗口模型）。'
+    + '若反复出现，说明该模型的窗口声明与服务端不一致，已在插件兜底表中修正。'
+}
+
+/**
  * 识别「额度用尽」类错误（非瞬时故障，重试无意义）。
  *
  * 实测 2026-11-08：免费额度耗尽时返回 HTTP 429 + code 14018，
@@ -333,9 +371,11 @@ export function quotaExhaustedMessage(errorBodyText) {
  * 避免失败被无声放大成刷屏调用。
  */
 export async function shouldRetryTransient(errorBodyText, response, signal) {
-  // 额度用尽 / 频率限制都不是瞬时故障，重试只会白等或继续撞墙
+  // 额度用尽 / 频率限制 / prompt 超长都不是瞬时故障；
+  // 超长还带官方 retry_policy.retry=false，重试只会继续撞墙
   if (quotaExhaustedMessage(errorBodyText)) return false
   if (rateLimitInfo(errorBodyText)) return false
+  if (promptTooLongMessage(errorBodyText)) return false
   let wants = false
   let waitMs = 1500
   try {
@@ -923,15 +963,19 @@ function install(ctx, cfg, logger) {
         // reasoning.efforts，界面上就完全没有「主动选思考等级」的入口。
         const efforts = pickEfforts(m)
         const fallback = FALLBACK_MODELS.find((f) => f.id === String(m.id))
+        // 目录给的是 maxInputTokens，但部分模型服务端对 prompt 另有更低硬限
+        // （实测 hy3/hy3-x: 目录 192000，服务端 100000，code 11115）。
+        // 以兜底表里已按实测修正过的值为准，避免宿主等到撞墙才压缩。
+        const catalogWindow = readNumber(m.maxInputTokens)
+          || readNumber(m.maxAllowedSize)
+          || readNumber(m.contextWindow)
+          || readNumber(m.contextWindow && m.contextWindow.defaultLength)
+        const declaredWindow = fallback ? Math.min(catalogWindow || fallback.contextWindow, fallback.contextWindow) : catalogWindow
         out.push({
           id: String(m.id),
           name: String(m.name || m.id),
-          // 目录里上下文可能是对象：{ defaultLength, supportedLengths }
-          contextWindow: readNumber(m.maxInputTokens)
-            || readNumber(m.maxAllowedSize)
-            || readNumber(m.contextWindow)
-            || readNumber(m.contextWindow && m.contextWindow.defaultLength),
-          maxOutputTokens: readNumber(m.maxOutputTokens),
+          contextWindow: declaredWindow,
+          maxOutputTokens: fallback ? Math.min(readNumber(m.maxOutputTokens) || fallback.maxOutputTokens, fallback.maxOutputTokens) : readNumber(m.maxOutputTokens),
           supportsImages: m.supportsImage === true || m.supportsVision === true || true,
           reasoningEfforts: efforts.length > 0 ? efforts : (fallback ? fallback.reasoningEfforts : GENERIC_EFFORTS),
           defaultReasoningEffort: pickDefaultEffort(m)
@@ -1105,6 +1149,9 @@ function install(ctx, cfg, logger) {
 
     if (!response.ok) {
       const text = await response.text().catch(() => '')
+      // prompt 超长：官方明确 retry=false，立刻给可执行建议，不换号不重试
+      const tooLong = promptTooLongMessage(text)
+      if (tooLong) throw new Error('codebuddy: ' + tooLong)
       // 频率限制 / 额度用尽：先看能不能换个账号继续（多号时）。
       // 换号成功就立刻用新凭据重发一次；只有一个账号时才如实报错。
       const rate = rateLimitInfo(text)

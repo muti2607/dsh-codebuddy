@@ -327,6 +327,36 @@ dispose()
     // 普通 11134 也不会被误判成限流
     if (rateLimitInfo(t11134)) fail("11134 不该判成频率限制")
   }
+
+  // prompt 超长 11115：官方 retry=false，必须识别且绝不重试
+  {
+    const { promptTooLongMessage } = await import("../index.js")
+    const t11115 = JSON.stringify({
+      code: 11115,
+      msg: "prompt is too long: 100001 tokens > 100000 maximum",
+      requestId: "x",
+      retry_policy: { retry: false },
+      extError: { code: "context_length_exceeded" },
+    })
+    const p = promptTooLongMessage(t11115)
+    if (!/输入超长/.test(p)) fail("11115 应识别为输入超长，实际: " + p)
+    if (!p.includes("100,001") || !p.includes("100,000")) fail("应带实际与上限数字，实际: " + p)
+    if (!/新会话|长上下文/.test(p)) fail("应给可执行建议，实际: " + p)
+    if (!/retry=false/.test(p)) fail("应说明官方禁止重试，实际: " + p)
+    if (await shouldRetryTransient(t11115, mkRes(400))) fail("prompt 超长不该重试")
+    if (promptTooLongMessage(t11134)) fail("11134 不该判成超长")
+    if (quotaExhaustedMessage(t11115)) fail("11115 不该判成额度用尽")
+  }
+
+  // 兜底表：hy3 系列窗口按服务端真实上限 100000 声明
+  {
+    const { FALLBACK_MODELS } = await import("../index.js")
+    for (const id of ["hy3", "hy3-x"]) {
+      const m = FALLBACK_MODELS.find((x) => x.id === id)
+      if (!m || m.contextWindow !== 100_000) fail(id + " 窗口应为 100000，实际 " + (m && m.contextWindow))
+      if (!m || m.maxOutputTokens > 32_000) fail(id + " 输出上限应收敛到 32000 以内")
+    }
+  }
 }
 
 console.log(JSON.stringify({ ok: !process.exitCode, models: FALLBACK_MODELS.length, neutralSystemChars: NEUTRAL_SYSTEM.length }, null, 2))

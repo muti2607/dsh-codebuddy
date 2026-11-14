@@ -1,6 +1,6 @@
 {
   "name": "dsh-codebuddy",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "type": "module",
   "description": "把腾讯 CodeBuddy（copilot.tencent.com）的免费模型接进 DSH 模型选择器：DeepSeek / GLM / Kimi / MiniMax 等，支持图片输入，内置自更新。复用 Channel Pack 已登录的账号凭据。",
   "keywords": [
