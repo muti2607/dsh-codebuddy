@@ -197,7 +197,60 @@ async function runCase(accountCount, responses) {
   }
 }
 
-// ---- 8. 已输出内容后 terminated：不重试，给出可读说明 ----
+// ---- 8. 已输出后 terminated：从断点续写一次，拼接完整 ----
+{
+  const home = makeHome(1)
+  const fake = makeCtx()
+  apply(fake, { dshHome: home })
+  let call = 0
+  const bodies = []
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url, init) => {
+    if (!String(url).includes('/v2/chat/completions')) return new Response('{}', { status: 404 })
+    call += 1
+    bodies.push(String(init.body))
+    if (call === 1) {
+      const enc = new TextEncoder()
+      const body = new ReadableStream({
+        start(c) {
+          c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"半"}}]}\n\n'))
+          setTimeout(() => c.error(new TypeError('terminated')), 5)
+        },
+      })
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    return new Response(SSE_OK, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+  }
+  let error = null
+  const chunks = []
+  try {
+    for await (const c of fake.adapter.stream({
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    })) chunks.push(c)
+  } catch (e) {
+    error = String(e && e.message || e)
+  } finally {
+    globalThis.fetch = realFetch
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+  if (error) fail('已输出后断流应续写而不是抛错: ' + error)
+  if (call !== 2) fail('应续写一次（共 2 次 chat），实际 ' + call)
+  const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.text).join('')
+  if (text !== '半ok') fail('续写应拼接在断点之后，实际: ' + JSON.stringify(text))
+  // 块 index 不能冲突：两段 text 块必须是不同 index
+  const starts = chunks.filter((c) => c.type === 'block-start' && c.blockType === 'text').map((c) => c.index)
+  if (starts.length !== 2 || starts[0] === starts[1]) fail('续写块的 index 必须与上一段不同，实际: ' + JSON.stringify(starts))
+  // 续写请求应带上断点回答 + 续写指令
+  const second = JSON.parse(bodies[1])
+  const msgs = second.messages
+  const lastAssistant = [...msgs].reverse().find((m) => m.role === 'assistant')
+  if (!lastAssistant || !JSON.stringify(lastAssistant).includes('半')) fail('续写请求应包含断点回答')
+  const lastUser = [...msgs].reverse().find((m) => m.role === 'user')
+  if (!lastUser || !/Continue exactly where/.test(JSON.stringify(lastUser))) fail('续写请求应带续写指令')
+}
+
+// ---- 9. 工具调用中途断开：绝不续写（半截参数是坏 JSON） ----
 {
   const home = makeHome(1)
   const fake = makeCtx()
@@ -210,27 +263,30 @@ async function runCase(accountCount, responses) {
     const enc = new TextEncoder()
     const body = new ReadableStream({
       start(c) {
-        c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"半"}}]}\n\n'))
+        c.enqueue(enc.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t1","function":{"name":"pwsh","arguments":"{\\"command\\":\\"rm"}}]}}]}\n\n'))
         setTimeout(() => c.error(new TypeError('terminated')), 5)
       },
     })
     return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
   }
   let error = null
+  const chunks = []
   try {
-    for await (const _c of fake.adapter.stream({
+    for await (const c of fake.adapter.stream({
       model: 'deepseek-v4.1-flash',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-    })) { /* 消费到断流 */ }
+    })) chunks.push(c)
   } catch (e) {
     error = String(e && e.message || e)
   } finally {
     globalThis.fetch = realFetch
     fs.rmSync(home, { recursive: true, force: true })
   }
-  if (!error) fail('已输出后断流应抛错')
-  if (!/中途断开/.test(error || '')) fail('应说明是中途断开，实际: ' + error)
-  if (call !== 1) fail('已输出内容不该重试，实际请求 ' + call + ' 次')
+  if (!error || !/中途断开/.test(error)) fail('工具中断应报可读错误，实际: ' + error)
+  if (call !== 1) fail('工具中断不该续写，实际请求 ' + call + ' 次')
+  // 半截工具块绝不能带 block-end 出去（宿主会照着执行坏参数）
+  const toolEnds = chunks.filter((c) => c.type === 'block-end' && c.block && c.block.type === 'tool-call')
+  if (toolEnds.length !== 0) fail('半截工具块不该闭合，实际发出 ' + toolEnds.length + ' 个')
 }
 
 console.log(JSON.stringify({ ok: !process.exitCode }, null, 2))

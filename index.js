@@ -1125,37 +1125,75 @@ function install(ctx, cfg, logger) {
    */
   async function* streamCall(options) {
     const MAX_RETRIES = 2
-    for (let attempt = 0; ; attempt++) {
-      let delivered = false
+    const MAX_CONTINUATIONS = 1
+    const INSTRUCTION = 'Your previous reply was cut off mid-way by a dropped connection. '
+      + 'Continue exactly where that reply stopped: do not repeat, summarize or restart '
+      + 'what was already written; resume the cut sentence and finish the remaining '
+      + 'content, then stop. Do not call tools in this continuation.'
+    let retries = 0
+    let continuations = 0
+    let indexOffset = 0
+    let answerText = ''
+    let sawToolCall = false
+    let delivered = false
+    let current = options
+    for (;;) {
       try {
-        for await (const chunk of streamOnce(options)) {
+        for await (const chunk of streamOnce(current, indexOffset)) {
           delivered = true
+          if (chunk.type === 'block-start') {
+            if (chunk.blockType === 'tool-call') sawToolCall = true
+            if (Number.isFinite(chunk.index)) indexOffset = Math.max(indexOffset, chunk.index + 1)
+          } else if (chunk.type === 'tool-call-delta') {
+            sawToolCall = true
+          } else if (chunk.type === 'text-delta') {
+            answerText += String(chunk.text || '')
+          }
           yield chunk
         }
         return
       } catch (error) {
         const aborted = options && options.signal && options.signal.aborted
         if (aborted) throw error
+        const interrupted = !!(error && error.codebuddyInterrupted)
+        if (interrupted && !sawToolCall && answerText.trim() !== '' && continuations < MAX_CONTINUATIONS) {
+          // 已吐字后断流：把断点回答作为 assistant 回合喂回去续写一次。
+          // 块 index 用已推进的 indexOffset，续写的块不会与上一段冲突；
+          // 只续一次，避免上游持续劣化时无限循环。
+          continuations++
+          logger.warn?.('[codebuddy] 响应流中途断开，从断点续写一次')
+          current = {
+            ...current,
+            messages: [...current.messages,
+              { role: 'assistant', content: [{ type: 'text', text: answerText }] },
+              { role: 'user', content: [{ type: 'text', text: INSTRUCTION }] },
+            ],
+          }
+          answerText = ''
+          continue
+        }
         if (!isConnectionDeath(error)) throw error
-        if (delivered) {
-          // 已经吐过内容：重来会重复输出，只能如实说明（宿主把普通 Error
-          // 统一记成 UNKNOWN，所以这里把原因写进 message 让人看得懂）
+        if (interrupted && delivered) {
+          // 有内容但不可续（涉工具/超次数/无正文）：保留已输出的部分，
+          // 如实说明（宿主把普通 Error 记成 UNKNOWN，把原因写进 message）。
           throw new Error('codebuddy: 响应流被上游中途断开（terminated / other side closed），'
             + '已收到的内容保留在上面对话里。重发这条消息可以继续。')
         }
-        if (attempt >= MAX_RETRIES) {
+        if (retries >= MAX_RETRIES) {
           throw new Error('codebuddy: 连接多次中断（' + String((error && error.message) || error) + '），'
             + '已重试 ' + MAX_RETRIES + ' 次仍失败。请检查网络后重发。')
         }
+        // 尚未吐出任何内容：换连接重来整轮不会重复输出，安全。
+        retries++
         logger.warn?.(`[codebuddy] 流在输出前中断（${String((error && error.message) || error)}），`
-          + `换连接重试第 ${attempt + 1}/${MAX_RETRIES} 次`)
-        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
+          + `换连接重试第 ${retries}/${MAX_RETRIES} 次`)
+        await new Promise((resolve) => setTimeout(resolve, 500 * retries))
         if (options && options.signal && options.signal.aborted) throw error
       }
     }
   }
 
-  async function* streamOnce(options) {
+  async function* streamOnce(options, startIndex = 0) {
     const credential = await ensureCredential()
     if (!credential || !credential.access_token) {
       throw new Error('codebuddy: 没有可用凭据，请先在 Channel Pack 登录 CodeBuddy 账号')
@@ -1201,7 +1239,7 @@ function install(ctx, cfg, logger) {
         const next = await ensureCredential()
         if (next && next.access_token) {
           const retried = await fetchPost(bodyJson, next, options.signal)
-          if (retried.ok) return yield* consumeSse(retried, options)
+          if (retried.ok) return yield* consumeSse(retried, options, startIndex)
           const t2 = await retried.text().catch(() => '')
           // 换号后还失败：把新错误如实抛出（不再连环换号，避免打穿所有账号）
           const r2 = rateLimitInfo(t2)
@@ -1226,7 +1264,7 @@ function install(ctx, cfg, logger) {
         const fresh = await ensureCredential()
         if (fresh && fresh.access_token !== credential.access_token) {
           const retry = await fetchPost(bodyJson, fresh, options.signal)
-          if (retry.ok) return yield* consumeSse(retry, options)
+          if (retry.ok) return yield* consumeSse(retry, options, startIndex)
           const rt = await retry.text().catch(() => '')
           throw new Error(`codebuddy: HTTP ${retry.status} ${rt.slice(0, 200)}`)
         }
@@ -1237,14 +1275,14 @@ function install(ctx, cfg, logger) {
       // 官方没表态的（网络断/超时）由宿主策略补发一次。
       if (await shouldRetryTransient(text, response, options.signal)) {
         response = await fetchPost(bodyJson, credential, options.signal)
-        if (response.ok) return yield* consumeSse(response, options)
+        if (response.ok) return yield* consumeSse(response, options, startIndex)
         const t2 = await response.text().catch(() => '')
         throw new Error(`codebuddy: HTTP ${response.status} ${t2.slice(0, 200)}`)
       }
       throw new Error(`codebuddy: HTTP ${response.status} ${text.slice(0, 200)}`)
     }
 
-    yield* consumeSse(response, options)
+    yield* consumeSse(response, options, startIndex)
   }
 
   /**
@@ -1258,14 +1296,17 @@ function install(ctx, cfg, logger) {
    *   · `usage` 一到就发，不等 finish；`finish` 是最后一个 chunk。
    * 少了 block-end 或工具块不完整，宿主就组装不出可执行的工具调用。
    */
-  async function* consumeSse(response, options) {
+  async function* consumeSse(response, options, startIndex = 0) {
     if (!response.body) throw new Error('codebuddy: 空响应体')
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
     let done = false
     let finishReason = ''
-    let nextIndex = 0
+    let nextIndex = startIndex
+    /** 已吐出的正文，断流时用于续写（不含思考内容）。 */
+    let answerText = ''
+    const collectedText = () => answerText
 
     /** 当前打开的 prose 块（reasoning 或 text）。 */
     let prose = null
@@ -1301,7 +1342,25 @@ function install(ctx, cfg, logger) {
     }
 
     for (; !done;) {
-      const result = await reader.read()
+      let result
+      try {
+        result = await reader.read()
+      } catch (error) {
+        // 读流中断（terminated / other side closed）：先闭合已打开的**文本/思考**
+        // 块（内容哪怕是半截也是合法块），否则宿主收到「有 block-start 没有
+        // block-end」的半成品，比报错更糟。
+        // 但**不闭合**未完成的工具块——参数被截断就是坏 JSON，闭合了宿主会
+        // 照着执行坏调用；让这轮直接以错误收场更安全。
+        // 断点信息挂在 error 上，供上层决定是否续写。
+        if (!isConnectionDeath(error)) throw error
+        const tail = closeProse()
+        if (tail) yield tail
+        const err = new Error('codebuddy: 响应流被上游中途断开')
+        err.codebuddyInterrupted = true
+        err.codebuddyPartial = { text: answerText, tools: toolOrder.length }
+        err.cause = error
+        throw err
+      }
       if (result.done) break
       buffer += decoder.decode(result.value, { stream: true })
       let nl
@@ -1357,6 +1416,7 @@ function install(ctx, cfg, logger) {
           const opened = openProse('text')
           for (const chunk of opened.flush) yield chunk
           opened.block.text += content
+          answerText += content
           yield { type: 'text-delta', index: opened.block.index, text: content }
         }
 
