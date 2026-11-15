@@ -217,21 +217,22 @@ function readNumber(value) {
 }
 
 /**
- * 判定 fetch 抛出的错误是不是「连接层死亡」而非请求本身的问题。
+ * 判定错误是不是「连接层死亡」而非请求本身的问题。
  *
- * Node fetch 网络层失败一律包成 TypeError: fetch failed，真因在 e.cause：
- * ECONNRESET / ECONNREFUSED / ENOTFOUND / EAI_AGAIN / ETIMEDOUT /
- * UND_ERR_SOCKET / socket hang up —— 都是连接没建立或中途被掐，
- * 重发（换一条连接）有意义；HTTP 状态类错误不带这些 code，不误伤。
+ * 两种形态都要认：
+ *   · 建连阶段：TypeError: fetch failed，真因在 cause（ECONNRESET 等）
+ *   · 读流阶段：TypeError: terminated / cause「other side closed」
+ *     —— 响应已建立，SSE 读到一半被对端掐断（实测 2026-11-15）
+ * 业务错误（11128、HTTP 4xx/5xx 正文）不带这些 code，不误伤。
  */
 export function isConnectionDeath(error) {
   const parts = []
   let node = error
   for (let depth = 0; node && depth < 4; depth++) {
-    parts.push(String(node.code || ''), String(node.message || ''))
+    parts.push(String(node.code || ''), String(node.message || ''), String(node.name || ''))
     node = node.cause
   }
-  return /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EPIPE|UND_ERR_SOCKET|UND_ERR_CONNECT|socket hang up|fetch failed/i.test(parts.join(' '))
+  return /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ETIMEDOUT|EPIPE|UND_ERR_SOCKET|UND_ERR_CONNECT|UND_ERR_BODY_TIMEOUT|socket hang up|other side closed|terminated|fetch failed|body timeout/i.test(parts.join(' '))
 }
 
 /**
@@ -1114,7 +1115,47 @@ function install(ctx, cfg, logger) {
     return urls
   }
 
+  /**
+   * 流级重试外壳。
+   *
+   * SSE 读到一半被对端掐断（`terminated` / other side closed）时，fetchPost
+   * 那层已经返回过 response，管不到；只能在这里重来整轮请求。
+   * 安全前提：**还没向模型吐出任何 chunk** —— 否则重来会造成重复输出，
+   * 那时如实报错更有用。最多重试 2 次，退避 500ms/1000ms。
+   */
   async function* streamCall(options) {
+    const MAX_RETRIES = 2
+    for (let attempt = 0; ; attempt++) {
+      let delivered = false
+      try {
+        for await (const chunk of streamOnce(options)) {
+          delivered = true
+          yield chunk
+        }
+        return
+      } catch (error) {
+        const aborted = options && options.signal && options.signal.aborted
+        if (aborted) throw error
+        if (!isConnectionDeath(error)) throw error
+        if (delivered) {
+          // 已经吐过内容：重来会重复输出，只能如实说明（宿主把普通 Error
+          // 统一记成 UNKNOWN，所以这里把原因写进 message 让人看得懂）
+          throw new Error('codebuddy: 响应流被上游中途断开（terminated / other side closed），'
+            + '已收到的内容保留在上面对话里。重发这条消息可以继续。')
+        }
+        if (attempt >= MAX_RETRIES) {
+          throw new Error('codebuddy: 连接多次中断（' + String((error && error.message) || error) + '），'
+            + '已重试 ' + MAX_RETRIES + ' 次仍失败。请检查网络后重发。')
+        }
+        logger.warn?.(`[codebuddy] 流在输出前中断（${String((error && error.message) || error)}），`
+          + `换连接重试第 ${attempt + 1}/${MAX_RETRIES} 次`)
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)))
+        if (options && options.signal && options.signal.aborted) throw error
+      }
+    }
+  }
+
+  async function* streamOnce(options) {
     const credential = await ensureCredential()
     if (!credential || !credential.access_token) {
       throw new Error('codebuddy: 没有可用凭据，请先在 Channel Pack 登录 CodeBuddy 账号')

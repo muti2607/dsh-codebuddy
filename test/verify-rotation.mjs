@@ -153,8 +153,84 @@ async function runCase(accountCount, responses) {
   for (const code of ['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET']) {
     if (!isConnectionDeath(wrap(code))) fail(code + ' 应判为连接死亡')
   }
+  // 流中途被掐：TypeError terminated / cause other side closed
+  const term = new TypeError('terminated')
+  term.cause = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' })
+  if (!isConnectionDeath(term)) fail('terminated/other side closed 应判为连接死亡')
+  const term2 = new TypeError('terminated')
+  if (!isConnectionDeath(term2)) fail('裸 terminated 也应判为连接死亡')
   if (isConnectionDeath(new Error('渠道校验失败 (code=11128)'))) fail('业务错误不该判为连接死亡')
   if (isConnectionDeath(Object.assign(new Error('bad json'), { code: 'SyntaxError' }))) fail('解析错误不该判为连接死亡')
+}
+
+// ---- 7. 流在输出前被 terminated：重试整轮并成功 ----
+{
+  const home = makeHome(1)
+  const fake = makeCtx()
+  apply(fake, { dshHome: home })
+  let call = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    if (!String(url).includes('/v2/chat/completions')) return new Response('{}', { status: 404 })
+    call += 1
+    if (call === 1) {
+      // 一条 SSE 都不给就读到断流
+      const body = new ReadableStream({ start(c) { c.error(new TypeError('terminated')) } })
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    return new Response(SSE_OK, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+  }
+  try {
+    const chunks = []
+    for await (const c of fake.adapter.stream({
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    })) chunks.push(c)
+    const text = chunks.filter((c) => c.type === 'text-delta').map((c) => c.text).join('')
+    if (text !== 'ok') fail('输出前断流应重试并拿到内容，实际: ' + JSON.stringify(text))
+    if (call !== 2) fail('应重试一次（共 2 次 chat），实际 ' + call)
+  } catch (e) {
+    fail('输出前断流应自愈，实际抛错: ' + String(e && e.message || e))
+  } finally {
+    globalThis.fetch = realFetch
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+}
+
+// ---- 8. 已输出内容后 terminated：不重试，给出可读说明 ----
+{
+  const home = makeHome(1)
+  const fake = makeCtx()
+  apply(fake, { dshHome: home })
+  let call = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    if (!String(url).includes('/v2/chat/completions')) return new Response('{}', { status: 404 })
+    call += 1
+    const enc = new TextEncoder()
+    const body = new ReadableStream({
+      start(c) {
+        c.enqueue(enc.encode('data: {"choices":[{"delta":{"content":"半"}}]}\n\n'))
+        setTimeout(() => c.error(new TypeError('terminated')), 5)
+      },
+    })
+    return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+  }
+  let error = null
+  try {
+    for await (const _c of fake.adapter.stream({
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    })) { /* 消费到断流 */ }
+  } catch (e) {
+    error = String(e && e.message || e)
+  } finally {
+    globalThis.fetch = realFetch
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+  if (!error) fail('已输出后断流应抛错')
+  if (!/中途断开/.test(error || '')) fail('应说明是中途断开，实际: ' + error)
+  if (call !== 1) fail('已输出内容不该重试，实际请求 ' + call + ' 次')
 }
 
 console.log(JSON.stringify({ ok: !process.exitCode }, null, 2))
