@@ -31,7 +31,7 @@ function sliceFn(name) {
 }
 
 // consumeSse 是 apply 内的闭包函数，单独抽出来测
-const csStart = src.indexOf("async function* consumeSse(response, options) {")
+const csStart = src.indexOf("async function* consumeSse(")
 if (csStart < 0) throw new Error("未找到 consumeSse")
 let depth = 0, i = src.indexOf("{", csStart)
 for (; i < src.length; i++) {
@@ -46,6 +46,7 @@ const code = [
   sliceFn("normalizeArgs"),
   sliceFn("normalizeArgsText"),
   sliceFn("isCompleteArgs"),
+  sliceFn("isConnectionDeath"),
   consumeSrc,
   "return { consumeSse }",
 ].join("\n\n")
@@ -110,9 +111,13 @@ const d = (o) => `data: ${JSON.stringify(o)}`
   const start = out.find((c) => c.type === "block-start" && c.blockType === "tool-call")
   if (!start) fail("工具调用缺 block-start(tool-call)")
   const deltas = out.filter((c) => c.type === "tool-call-delta")
-  if (deltas.length < 2) fail("工具参数分片未全部转发，收到 " + deltas.length)
-  if (deltas[0].id !== "call_abc") fail("首片应带真实 id")
-  if (deltas[1].id !== "call_abc") fail("后续片应复用同一 id，实际 " + deltas[1].id)
+  // 参数完整才下发（断流时宿主手里没有半截块），所以这里只应有一条完整 delta
+  if (deltas.length !== 1) fail("工具参数应合并为一条完整 delta，实际 " + deltas.length)
+  if (deltas[0].id !== "call_abc") fail("delta 应带真实 id")
+  if (deltas[0].name !== "pwsh") fail("delta 应带 name")
+  let sentArgs = null
+  try { sentArgs = JSON.parse(deltas[0].argumentsDelta) } catch { fail("delta 参数不是完整 JSON: " + deltas[0].argumentsDelta) }
+  if (sentArgs && sentArgs.command !== "ls") fail("delta 参数内容不对: " + deltas[0].argumentsDelta)
   const end = out.find((c) => c.type === "block-end" && c.block && c.block.type === "tool-call")
   if (!end) fail("工具调用缺 block-end")
   else {

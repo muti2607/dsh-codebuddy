@@ -250,24 +250,28 @@ async function runCase(accountCount, responses) {
   if (!lastUser || !/Continue exactly where/.test(JSON.stringify(lastUser))) fail('续写请求应带续写指令')
 }
 
-// ---- 9. 工具调用中途断开：绝不续写（半截参数是坏 JSON） ----
+// ---- 9. 工具参数生成到一半断开：半截块从未下发，整轮重发安全 ----
 {
   const home = makeHome(1)
   const fake = makeCtx()
   apply(fake, { dshHome: home })
   let call = 0
   const realFetch = globalThis.fetch
+  const FULL_TOOL = 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t1","function":{"name":"pwsh","arguments":"{\\"command\\":\\"echo hi\\"}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n'
   globalThis.fetch = async (url) => {
     if (!String(url).includes('/v2/chat/completions')) return new Response('{}', { status: 404 })
     call += 1
-    const enc = new TextEncoder()
-    const body = new ReadableStream({
-      start(c) {
-        c.enqueue(enc.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t1","function":{"name":"pwsh","arguments":"{\\"command\\":\\"rm"}}]}}]}\n\n'))
-        setTimeout(() => c.error(new TypeError('terminated')), 5)
-      },
-    })
-    return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    if (call === 1) {
+      const enc = new TextEncoder()
+      const body = new ReadableStream({
+        start(c) {
+          c.enqueue(enc.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t1","function":{"name":"pwsh","arguments":"{\\"command\\":\\"echo"}}]}}]}\n\n'))
+          setTimeout(() => c.error(new TypeError('terminated')), 5)
+        },
+      })
+      return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+    }
+    return new Response(FULL_TOOL, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
   }
   let error = null
   const chunks = []
@@ -282,11 +286,49 @@ async function runCase(accountCount, responses) {
     globalThis.fetch = realFetch
     fs.rmSync(home, { recursive: true, force: true })
   }
-  if (!error || !/中途断开/.test(error)) fail('工具中断应报可读错误，实际: ' + error)
-  if (call !== 1) fail('工具中断不该续写，实际请求 ' + call + ' 次')
-  // 半截工具块绝不能带 block-end 出去（宿主会照着执行坏参数）
+  if (error) fail('工具参数未完成时断流应安全重发，实际抛错: ' + error)
+  if (call !== 2) fail('应整轮重发一次，实际请求 ' + call + ' 次')
   const toolEnds = chunks.filter((c) => c.type === 'block-end' && c.block && c.block.type === 'tool-call')
-  if (toolEnds.length !== 0) fail('半截工具块不该闭合，实际发出 ' + toolEnds.length + ' 个')
+  if (toolEnds.length !== 1) fail('应只下发 1 个完整工具块，实际 ' + toolEnds.length)
+  const args = toolEnds[0] && toolEnds[0].block && toolEnds[0].block.arguments
+  let parsed = null
+  try { parsed = JSON.parse(args) } catch { /* 坏 JSON */ }
+  if (!parsed || parsed.command !== 'echo hi') fail('工具参数应是完整 JSON，实际: ' + String(args))
+}
+
+// ---- 10. 已下发完整工具块后再断：不可重试（否则二次执行） ----
+{
+  const home = makeHome(1)
+  const fake = makeCtx()
+  apply(fake, { dshHome: home })
+  let call = 0
+  const realFetch = globalThis.fetch
+  globalThis.fetch = async (url) => {
+    if (!String(url).includes('/v2/chat/completions')) return new Response('{}', { status: 404 })
+    call += 1
+    const enc = new TextEncoder()
+    const body = new ReadableStream({
+      start(c) {
+        c.enqueue(enc.encode('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t1","function":{"name":"pwsh","arguments":"{\\"command\\":\\"echo hi\\"}"}}]}}]}\n\n'))
+        setTimeout(() => c.error(new TypeError('terminated')), 5)
+      },
+    })
+    return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+  }
+  let error = null
+  try {
+    for await (const _c of fake.adapter.stream({
+      model: 'deepseek-v4.1-flash',
+      messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+    })) { /* 消费 */ }
+  } catch (e) {
+    error = String(e && e.message || e)
+  } finally {
+    globalThis.fetch = realFetch
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+  if (!error) fail('工具块已下发后断流应报错')
+  if (call !== 1) fail('工具块已下发后不该重试，实际请求 ' + call + ' 次')
 }
 
 console.log(JSON.stringify({ ok: !process.exitCode }, null, 2))
