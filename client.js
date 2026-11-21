@@ -1,12 +1,17 @@
 /**
  * dsh-codebuddy — Client half (Web).
  *
- * 在设置里加一页「CodeBuddy 账号」：
- *   · 「添加账号」→ 调 Host 的 /api/cb/login 拿到登录页 URL，并自动打开浏览器；
- *     面板显示「等待浏览器授权…」，轮询到 done / failed 后即刻刷新账号列表
- *   · 账号行显示昵称、过期时间、是否可续期；可停用 / 删除
- *   · 版本与自更新状态也在这里，一键更新
- *   · 凭据只发往本机同源 API；所有响应都不含令牌本体
+ * 设置页「CodeBuddy 账号」。视觉沿用 Our Free Model 的设计语言：
+ *   · 全部色值取自宿主 --dsw-alias-* 令牌，昼夜随宿主切换，不写死颜色
+ *   · 层级约定：layer-3 凹槽/卡面 · layer-2 面板 · layer-1 浮起元素
+ *   · 卡片双层 bezel（hairline 边框 + 顶部内高光 + 柔和外阴影）
+ *   · 动效只用 transform/opacity，150–300ms
+ *
+ * 交互：
+ *   · 「添加账号 / 添加 WorkBuddy」→ /api/cb/login 拿登录页并自动开浏览器，
+ *     面板转「等待浏览器授权」，每 1.5s 轮询到 done/failed
+ *   · 账号卡片：昵称、可用状态、续期能力、有效期；停用/启用/删除
+ *   · 同页显示版本与自更新；两组路由分别硬编码，避免前缀互相遮蔽
  */
 window.__ModuleLoader__.load({
   id: 'dsh-codebuddy',
@@ -22,21 +27,23 @@ window.__ModuleLoader__.load({
       zh: {
         nav: 'CodeBuddy 账号',
         'meta.title': 'CodeBuddy 免费模型',
-        'meta.description': '腾讯 CodeBuddy / WorkBuddy 免模型接入，内置浏览器登录。',
+        'meta.description': '腾讯 CodeBuddy / WorkBuddy 免费模型接入，内置浏览器登录。',
         title: 'CodeBuddy 账号',
-        sub: '点「添加账号」后浏览器会打开登录页，确认后自动完成，无需复制任何东西。',
+        sub: '点「添加账号」后浏览器会打开登录页，确认即完成，无需复制任何内容。',
         add: '添加账号',
         addWork: '添加 WorkBuddy',
         waiting: '等待浏览器授权…',
-        waitingHint: '若浏览器没有自动打开，点下面的链接手动前往',
+        waitingHint: '浏览器没有自动打开？点下面的链接手动前往',
         openManual: '打开登录页',
         cancel: '取消',
         done: '登录完成',
         failed: '登录未完成',
         retry: '重试',
-        accounts: '账号',
-        noAccount: '还没有账号，点上面的按钮登录一次即可',
-        enabled: '已启用',
+        secAccounts: '账号',
+        secAccountsHint: '登录一次即可，模型选择器里立刻可用',
+        noAccount: '还没有账号',
+        noAccountHint: '点上面的按钮登录一次，凭据只存在本机',
+        enabled: '可用',
         disabled: '已停用',
         disable: '停用',
         enable: '启用',
@@ -47,33 +54,37 @@ window.__ModuleLoader__.load({
         noExpiry: '有效期未知',
         loading: '读取中…',
         error: '操作失败',
+        secSystem: '插件',
         version: '版本',
         checkUpdate: '检查更新',
         update: '立即更新',
         updating: '更新中…',
         upToDate: '已是最新',
         updateAvailable: '有新版本',
-        restartNeeded: '更新已应用，重启 DSH 后生效',
-        reloadHint: '登录成功后模型选择器立即可用；如界面未刷新，切换一次模型即可。',
+        restartNeeded: '已应用，重启 DSH 后生效',
+        reloadHint: '登录后即可在模型选择器里选择；若列表未刷新，切换一次模型即可。',
+        neverExpire: '长期有效',
       },
       en: {
         nav: 'CodeBuddy accounts',
         'meta.title': 'CodeBuddy free models',
         'meta.description': 'Tencent CodeBuddy / WorkBuddy free models with built-in browser login.',
         title: 'CodeBuddy accounts',
-        sub: 'Click "Add account" and sign in via the browser that opens. Nothing to copy.',
+        sub: 'Click "Add account" and confirm in the browser that opens. Nothing to copy.',
         add: 'Add account',
         addWork: 'Add WorkBuddy',
         waiting: 'Waiting for browser sign-in…',
-        waitingHint: 'If the browser did not open, use this link',
+        waitingHint: 'Browser did not open? Use the link below',
         openManual: 'Open sign-in page',
         cancel: 'Cancel',
         done: 'Signed in',
         failed: 'Sign-in did not complete',
         retry: 'Retry',
-        accounts: 'Accounts',
-        noAccount: 'No account yet — sign in once with the button above',
-        enabled: 'Enabled',
+        secAccounts: 'Accounts',
+        secAccountsHint: 'Sign in once — models become available immediately',
+        noAccount: 'No account yet',
+        noAccountHint: 'Sign in once with the button above; credentials stay on this machine',
+        enabled: 'Active',
         disabled: 'Disabled',
         disable: 'Disable',
         enable: 'Enable',
@@ -84,25 +95,22 @@ window.__ModuleLoader__.load({
         noExpiry: 'Expiry unknown',
         loading: 'Loading…',
         error: 'Failed',
+        secSystem: 'Plugin',
         version: 'Version',
         checkUpdate: 'Check update',
         update: 'Update now',
         updating: 'Updating…',
         upToDate: 'Up to date',
         updateAvailable: 'Update available',
-        restartNeeded: 'Update applied — restart DSH to take effect',
-        reloadHint: 'Models are available right after sign-in. If the picker looks stale, switch models once.',
+        restartNeeded: 'Applied — restart DSH to take effect',
+        reloadHint: 'Models are selectable right after sign-in. If the picker looks stale, switch models once.',
+        neverExpire: 'No expiry',
       },
     }
 
-    // 两组路由分开：登录/账号在 /api/cb，版本与自更新在 /api/codebuddy。
-    // 直接写死两条前缀，避免用正则从一条推导另一条（推导错会静默 404）。
-    const CB = (() => {
-      try { return new URL('api/cb', document.baseURI).pathname } catch { return '/api/cb' }
-    })()
-    const MAIN = (() => {
-      try { return new URL('api/codebuddy', document.baseURI).pathname } catch { return '/api/codebuddy' }
-    })()
+    // 两组前缀分别硬编码：/api/cb 登录与账号，/api/codebuddy 版本与自更新。
+    const CB = (() => { try { return new URL('api/cb', document.baseURI).pathname } catch { return '/api/cb' } })()
+    const MAIN = (() => { try { return new URL('api/codebuddy', document.baseURI).pathname } catch { return '/api/codebuddy' } })()
 
     async function request(url, options) {
       const { timeout = 15000, ...rest } = options || {}
@@ -127,25 +135,102 @@ window.__ModuleLoader__.load({
     const fmtTime = (ms) => {
       if (!ms) return ''
       try {
-        return new Date(ms).toLocaleString(undefined, { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+        return new Date(ms).toLocaleString(undefined, {
+          year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+        })
       } catch { return '' }
     }
+
+    /* 与 OFM 同一套视觉令牌与层级约定 */
+    const CSS = `
+.cb_root{--ease:cubic-bezier(.16,1,.3,1);display:flex;flex-direction:column;gap:18px;max-width:1080px;font-size:13px;line-height:1.55;color:var(--dsw-alias-label-primary);-webkit-font-smoothing:antialiased}
+.cb_root *{box-sizing:border-box}
+.cb_root :focus-visible{outline:2px solid color-mix(in srgb,var(--dsw-alias-state-business-primary) 78%,transparent);outline-offset:2px}
+
+/* ── 页头 hero：渐变底 + 两处径向光，标题用渐变文字 ── */
+.cb_hero{position:relative;display:flex;flex-direction:column;gap:12px;padding:20px 22px;border-radius:20px;border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2) 78%,transparent);background:linear-gradient(165deg,color-mix(in srgb,var(--dsw-alias-bg-layer-3) 88%,transparent),color-mix(in srgb,var(--dsw-alias-bg-layer-1) 82%,transparent));overflow:hidden}
+.cb_hero::before{content:"";position:absolute;inset:0;pointer-events:none;background:radial-gradient(120% 150% at 12% -20%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 13%,transparent),transparent 58%),radial-gradient(90% 120% at 88% 130%,color-mix(in srgb,var(--dsw-alias-state-success-primary) 7%,transparent),transparent 60%)}
+.cb_hero>*{position:relative}
+.cb_pagehead{display:flex;align-items:flex-end;gap:14px;flex-wrap:wrap}
+.cb_pagetitle{display:flex;flex-direction:column;gap:5px;min-width:0}
+.cb_pagetitle h2{margin:0;font-size:22px;font-weight:760;letter-spacing:-.6px;line-height:1.2;background:linear-gradient(120deg,var(--dsw-alias-label-primary) 20%,color-mix(in srgb,var(--dsw-alias-label-primary) 55%,var(--dsw-alias-state-business-primary)));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.cb_pagesub{margin:0;font-size:12.5px;color:var(--dsw-alias-label-secondary);max-width:70ch}
+.cb_pills{display:flex;gap:6px;flex-wrap:wrap;margin-left:auto}
+.cb_pill{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 78%,transparent);font-size:11.5px;color:var(--dsw-alias-label-secondary);white-space:nowrap}
+.cb_pill.strong{color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2)}
+.cb_dot{width:6px;height:6px;border-radius:50%;background:var(--dsw-alias-label-tertiary);flex:none}
+@keyframes cb-breathe{0%,100%{opacity:1}50%{opacity:.5}}
+.cb_dot.ok{background:var(--dsw-alias-state-success-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary) 18%,transparent);animation:cb-breathe 2.6s ease-in-out infinite}
+.cb_dot.warn{background:var(--dsw-alias-state-warning-primary,#f0a441);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-warning-primary,#f0a441) 18%,transparent)}
+.cb_dot.err{background:var(--dsw-alias-state-error-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-error-primary) 18%,transparent)}
+.cb_dot.busy{background:var(--dsw-alias-state-business-primary);animation:cb-breathe 1.1s ease-in-out infinite}
+
+/* ── 分节 ── */
+.cb_sec{display:flex;flex-direction:column;gap:10px}
+.cb_sechead{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;padding-bottom:6px;border-bottom:1px solid var(--dsw-alias-border-l1)}
+.cb_sec_title{font-size:14px;font-weight:680;letter-spacing:-.2px}
+.cb_sec_hint{font-size:11.5px;color:var(--dsw-alias-label-tertiary);margin-left:auto}
+.cb_grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(258px,1fr));gap:10px}
+
+/* ── 卡片：双层 bezel，hover 抬升 2px ── */
+.cb_card{position:relative;display:flex;flex-direction:column;gap:8px;padding:12px 13px;border-radius:13px;border:1px solid var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-bg-layer-3) 80%,transparent);box-shadow:inset 0 1px 0 rgb(255 255 255 / 6%),0 1px 2px color-mix(in srgb,var(--dsw-alias-state-business-primary) 7%,transparent),0 3px 10px color-mix(in srgb,var(--dsw-alias-state-business-primary) 4%,transparent);transition:transform .2s var(--ease),box-shadow .24s ease,border-color .18s ease}
+.cb_card:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 66%,var(--dsw-alias-border-l2));box-shadow:inset 0 1px 0 rgb(255 255 255 / 9%),0 16px 34px color-mix(in srgb,var(--dsw-alias-state-business-primary) 12%,transparent)}
+.cb_card.dim{opacity:.66}
+.cb_card.panel{padding:14px 15px;border-radius:16px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-2) 82%,transparent);gap:10px}
+.cb_cardhead{display:flex;align-items:center;gap:8px}
+.cb_cardname{font-size:13.5px;font-weight:650;letter-spacing:-.1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cb_badge{margin-left:auto;font-size:10.5px;font-weight:600;padding:2px 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 60%,transparent);white-space:nowrap}
+.cb_badge.on{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 10%,transparent)}
+.cb_badge.off{color:var(--dsw-alias-label-tertiary)}
+.cb_badge.new{color:var(--dsw-alias-state-business-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 45%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 10%,transparent)}
+.cb_tags{display:flex;gap:5px;flex-wrap:wrap}
+.cb_tag{font-size:10.5px;padding:2px 8px;border-radius:999px;background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent);border:1px solid var(--dsw-alias-border-l1);color:var(--dsw-alias-label-secondary)}
+.cb_metrics{display:flex;gap:12px;font-size:11px;color:var(--dsw-alias-label-tertiary);flex-wrap:wrap}
+.cb_metrics b{color:var(--dsw-alias-label-secondary);font-weight:600;font-variant-numeric:tabular-nums}
+.cb_actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:2px}
+
+/* ── 按钮 ── */
+.cb_btn{font:inherit;font-size:12px;font-weight:580;padding:6px 14px;border-radius:9px;border:1px solid var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-bg-layer-3) 84%,transparent);box-shadow:inset 0 1px 0 rgb(255 255 255 / 5%),0 1px 2px rgb(0 0 0 / 6%);color:var(--dsw-alias-label-primary);cursor:pointer;transition:transform .18s var(--ease),border-color .2s var(--ease),background .2s var(--ease),box-shadow .22s var(--ease),opacity .16s ease}
+.cb_btn:hover:not(:disabled){border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 62%,var(--dsw-alias-border-l2));background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 7%,var(--dsw-alias-bg-layer-3));transform:translateY(-1px);box-shadow:inset 0 1px 0 rgb(255 255 255 / 7%),0 3px 8px rgb(0 0 0 / 9%)}
+.cb_btn:active:not(:disabled){transform:scale(.985);transition-duration:.1s}
+.cb_btn:disabled{opacity:.45;cursor:default;transform:none;box-shadow:none}
+.cb_btn.primary{background:linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-state-business-primary) 88%,#fff),var(--dsw-alias-state-business-primary));border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 82%,#000);color:var(--dsw-alias-label-on-accent,#fff);box-shadow:inset 0 1px 0 rgb(255 255 255 / 18%),0 2px 8px color-mix(in srgb,var(--dsw-alias-state-business-primary) 32%,transparent)}
+.cb_btn.primary:hover:not(:disabled){background:linear-gradient(180deg,var(--dsw-alias-state-business-primary),color-mix(in srgb,var(--dsw-alias-state-business-primary) 88%,#000));box-shadow:inset 0 1px 0 rgb(255 255 255 / 20%),0 4px 14px color-mix(in srgb,var(--dsw-alias-state-business-primary) 42%,transparent)}
+.cb_btn.ghost{background:transparent;box-shadow:none;border-color:transparent;color:var(--dsw-alias-label-secondary)}
+.cb_btn.ghost:hover:not(:disabled){background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 80%,transparent);border-color:var(--dsw-alias-border-l1);color:var(--dsw-alias-label-primary)}
+.cb_mini{font:inherit;font-size:11px;font-weight:540;padding:3px 9px;border-radius:8px;border:1px solid color-mix(in srgb,var(--dsw-alias-border-l2) 85%,transparent);background:color-mix(in srgb,var(--dsw-alias-bg-layer-3) 70%,transparent);color:var(--dsw-alias-label-secondary);cursor:pointer;transition:transform .12s ease,border-color .16s ease,color .16s ease,background .16s ease,opacity .16s ease}
+.cb_mini:hover:not(:disabled){border-color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 60%,transparent);color:var(--dsw-alias-label-primary);background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 7%,transparent);transform:translateY(-1px)}
+.cb_mini:active:not(:disabled){transform:scale(.96)}
+.cb_mini:disabled{opacity:.45;cursor:default;transform:none}
+.cb_mini.danger:hover:not(:disabled){border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 60%,transparent);color:var(--dsw-alias-state-error-primary);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 7%,transparent)}
+
+/* ── 提示与等待态 ── */
+.cb_note{font-size:11px;color:var(--dsw-alias-label-tertiary);line-height:1.5}
+.cb_msg{font-size:12px;padding:8px 11px;border-radius:10px;border:1px solid transparent}
+.cb_msg.err{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 35%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-error-primary) 8%,transparent)}
+.cb_msg.ok{color:var(--dsw-alias-state-success-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 35%,transparent);background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 8%,transparent)}
+.cb_wait{display:flex;flex-direction:column;gap:8px}
+.cb_waitline{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:560}
+.cb_link{font-size:11.5px;color:var(--dsw-alias-state-business-primary);word-break:break-all;text-decoration:none;border-bottom:1px dashed color-mix(in srgb,var(--dsw-alias-state-business-primary) 45%,transparent);padding-bottom:1px}
+.cb_link:hover{color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 82%,#000)}
+.cb_empty{display:flex;flex-direction:column;gap:4px;padding:18px 6px;text-align:center}
+.cb_empty b{font-size:13px;font-weight:600;color:var(--dsw-alias-label-secondary)}
+`
 
     function SettingsPage(props) {
       const t = (key) => (props && props.t ? props.t(key) : key)
       const [accounts, setAccounts] = useState(null)
-      const [pending, setPending] = useState([])
       const [busy, setBusy] = useState('')
       const [error, setError] = useState('')
       const [notice, setNotice] = useState('')
-      const [login, setLogin] = useState(null)   // { accountId, loginUrl, status }
+      const [login, setLogin] = useState(null)
       const [ver, setVer] = useState(null)
       const [update, setUpdate] = useState(null)
       const [updating, setUpdating] = useState(false)
       const pollRef = useRef(null)
 
       const load = () => api('/accounts').then((data) => {
-        if (data && data.ok) { setAccounts(data.accounts || []); setPending(data.pending || []); setError('') }
+        if (data && data.ok) { setAccounts(data.accounts || []); setError('') }
         else setError(String((data && data.error) || 'bad-response'))
       }).catch((e) => setError(String(e.message || e)))
 
@@ -155,7 +240,7 @@ window.__ModuleLoader__.load({
         return () => { if (pollRef.current) clearInterval(pollRef.current) }
       }, [])
 
-      // 轮询登录结果：done/failed 时停表并刷新账号
+      // 轮询登录：done / failed 即停表；done 时刷新账号列表
       useEffect(() => {
         if (!login || login.status !== 'pending') {
           if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
@@ -165,15 +250,15 @@ window.__ModuleLoader__.load({
           try {
             const r = await api('/login?accountId=' + encodeURIComponent(login.accountId))
             if (!r || r.ok === false) {
-              setLogin((prev) => prev ? { ...prev, status: 'failed', error: (r && r.error) || '' } : prev)
+              setLogin((prev) => (prev ? { ...prev, status: 'failed', error: (r && r.error) || '' } : prev))
               return
             }
             if (r.status === 'done') {
-              setLogin((prev) => prev ? { ...prev, status: 'done', nickname: r.nickname } : prev)
+              setLogin((prev) => (prev ? { ...prev, status: 'done', nickname: r.nickname } : prev))
               setNotice(t('done') + (r.nickname ? '：' + r.nickname : ''))
               load()
             } else if (r.status === 'failed') {
-              setLogin((prev) => prev ? { ...prev, status: 'failed', error: r.error || '' } : prev)
+              setLogin((prev) => (prev ? { ...prev, status: 'failed', error: r.error || '' } : prev))
             }
           } catch { /* 下一拍再试 */ }
         }
@@ -183,21 +268,17 @@ window.__ModuleLoader__.load({
       }, [login && login.accountId, login && login.status])
 
       async function startLogin(provider) {
-        setBusy('login')
-        setError('')
-        setNotice('')
+        setBusy('login'); setError(''); setNotice('')
         try {
           const r = await post('/login?provider=' + encodeURIComponent(provider), {})
           if (!r || !r.ok) throw new Error((r && r.error) || 'login-failed')
           setLogin({ accountId: r.accountId, loginUrl: r.loginUrl, status: 'pending', provider })
-        } catch (e) {
-          setError(t('error') + ': ' + String(e.message || e))
-        } finally { setBusy('') }
+        } catch (e) { setError(t('error') + ': ' + String(e.message || e)) }
+        finally { setBusy('') }
       }
 
       async function act(accountId, action, extra) {
-        setBusy(action + ':' + accountId)
-        setError('')
+        setBusy(action + ':' + accountId); setError('')
         try {
           const r = await post('/accounts', { accountId, action, ...extra })
           if (!r || !r.ok) throw new Error((r && r.error) || 'failed')
@@ -208,16 +289,13 @@ window.__ModuleLoader__.load({
 
       async function checkUpdate() {
         setBusy('check')
-        try {
-          const r = await apiMain('/update?force=1', { timeout: 30000 })
-          setUpdate(r)
-        } catch (e) { setError(t('error') + ': ' + String(e.message || e)) }
+        try { setUpdate(await apiMain('/update?force=1', { timeout: 30000 })) }
+        catch (e) { setError(t('error') + ': ' + String(e.message || e)) }
         finally { setBusy('') }
       }
 
       async function applyUpdate() {
-        setUpdating(true)
-        setError('')
+        setUpdating(true); setError('')
         try {
           const r = await apiMain('/update', { method: 'POST', timeout: 180000 })
           if (r && r.restartRequired) setNotice(t('restartNeeded'))
@@ -229,101 +307,122 @@ window.__ModuleLoader__.load({
       }
 
       const rows = accounts || []
-      return h('div', { className: 'cb-root' },
-        h('style', null, `
-.cb-root{font:inherit;color:var(--dsw-alias-label-primary,inherit)}
-.cb-head{margin-bottom:14px}
-.cb-title{margin:0;font-size:17px;font-weight:600}
-.cb-sub{margin:5px 0 0;font-size:12px;opacity:.72;line-height:1.6}
-.cb-card{border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.3));border-radius:10px;padding:12px 14px;margin-bottom:10px;background:var(--dsw-alias-bg-layer-1,transparent)}
-.cb-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.cb-name{font-weight:600;font-size:13px}
-.cb-badge{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.3));opacity:.85}
-.cb-badge-on{color:#1a9c6a;border-color:#1a9c6a;opacity:1}
-.cb-meta{font-size:11px;opacity:.65}
-.cb-actions{display:flex;align-items:center;gap:8px;margin-top:10px;flex-wrap:wrap}
-.cb-btn{appearance:none;border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.4));background:var(--dsw-alias-bg-layer-1,transparent);color:inherit;border-radius:7px;padding:5px 12px;font-size:12px;cursor:pointer;font-family:inherit}
-.cb-btn:hover:not(:disabled){border-color:#4C8DFF;color:#4C8DFF}
-.cb-btn:disabled{opacity:.55;cursor:default}
-.cb-btn-primary{border-color:#4C8DFF;color:#4C8DFF}
-.cb-link{font-size:12px;word-break:break-all;margin-top:8px}
-.cb-note{font-size:12px;margin-top:10px;opacity:.75}
-.cb-error{color:#e05555;font-size:12px;margin:8px 0}
-.cb-ok{color:#1a9c6a;font-size:12px;margin:8px 0}
-.cb-wait{display:flex;align-items:center;gap:8px;font-size:12px;margin-top:8px}
-.cb-dot{width:8px;height:8px;border-radius:50%;background:#4C8DFF;animation:cbb 1s infinite}
-@keyframes cbb{0%,100%{opacity:.25}50%{opacity:1}}
-`),
-        h('div', { className: 'cb-head' },
-          h('h1', { className: 'cb-title' }, t('title')),
-          h('p', { className: 'cb-sub' }, t('sub'))),
-        error ? h('div', { className: 'cb-error' }, error) : null,
-        notice ? h('div', { className: 'cb-ok' }, notice) : null,
+      const activeCount = rows.filter((a) => a.enabled).length
+      const version = ver && ver.version ? ver.version : '—'
 
-        // 登录进行中 / 完成 / 失败
-        login ? h('div', { className: 'cb-card' },
-          login.status === 'pending'
-            ? h('div', null,
-              h('div', { className: 'cb-wait' }, h('span', { className: 'cb-dot' }), t('waiting')),
-              h('div', { className: 'cb-meta', style: { marginTop: 6 } }, t('waitingHint')),
-              h('div', { className: 'cb-link' },
-                h('a', { href: login.loginUrl, target: '_blank', rel: 'noreferrer noopener' }, login.loginUrl)),
-              h('div', { className: 'cb-actions' },
-                h('button', { className: 'cb-btn', onClick: () => setLogin(null) }, t('cancel'))))
-            : login.status === 'done'
-              ? h('div', { className: 'cb-ok' }, t('done') + (login.nickname ? '：' + login.nickname : ''))
-              : h('div', null,
-                h('div', { className: 'cb-error' }, t('failed') + (login.error ? '：' + login.error : '')),
-                h('div', { className: 'cb-link' },
-                  h('a', { href: login.loginUrl, target: '_blank', rel: 'noreferrer noopener' }, t('openManual'))),
-                h('div', { className: 'cb-actions' },
-                  h('button', { className: 'cb-btn cb-btn-primary', onClick: () => { setLogin(null); startLogin(login.provider || 'buddy') } }, t('retry')),
-                  h('button', { className: 'cb-btn', onClick: () => setLogin(null) }, t('cancel'))))) : null,
+      return h('div', { className: 'cb_root' },
+        h('style', null, CSS),
 
-        // 账号列表
-        h('div', { className: 'cb-card' },
-          h('div', { className: 'cb-row' },
-            h('span', { className: 'cb-name' }, t('accounts')),
-            h('span', { className: 'cb-badge' + (rows.length ? ' cb-badge-on' : '') }, rows.length ? rows.length : t('noAccount'))),
-          rows.length ? h('div', { style: { marginTop: 8 } }, rows.map((a) => h('div', {
-            key: a.id, className: 'cb-row', style: { marginTop: 6 },
-          },
-            h('span', { className: 'cb-meta', style: { fontSize: 12, opacity: 1 } }, a.nickname || a.id),
-            h('span', { className: 'cb-badge' + (a.enabled ? ' cb-badge-on' : '') }, a.enabled ? t('enabled') : t('disabled')),
-            h('span', { className: 'cb-meta' }, a.refreshable ? t('refreshable') : t('noRefresh')),
-            h('span', { className: 'cb-meta' }, a.expiresAt ? t('expires') + ' ' + fmtTime(a.expiresAt) : t('noExpiry')),
+        // ── hero ──
+        h('div', { className: 'cb_hero' },
+          h('div', { className: 'cb_pagehead' },
+            h('div', { className: 'cb_pagetitle' },
+              h('h2', null, t('title')),
+              h('p', { className: 'cb_pagesub' }, t('sub'))),
+            h('div', { className: 'cb_pills' },
+              h('span', { className: 'cb_pill' + (activeCount ? ' strong' : '') },
+                h('span', { className: 'cb_dot' + (activeCount ? ' ok' : '') }),
+                activeCount ? `${activeCount} ${t('enabled')}` : t('noAccount')),
+              h('span', { className: 'cb_pill strong' }, t('version') + ' ' + version)))),
+
+        error ? h('div', { className: 'cb_msg err' }, error) : null,
+        notice ? h('div', { className: 'cb_msg ok' }, notice) : null,
+
+        // ── 登录进行中 ──
+        login && login.status === 'pending'
+          ? h('div', { className: 'cb_card panel' },
+            h('div', { className: 'cb_wait' },
+              h('div', { className: 'cb_waitline' },
+                h('span', { className: 'cb_dot busy' }),
+                t('waiting')),
+              h('div', { className: 'cb_note' }, t('waitingHint')),
+              h('div', null,
+                h('a', { className: 'cb_link', href: login.loginUrl, target: '_blank', rel: 'noreferrer noopener' },
+                  t('openManual'))),
+              h('div', { className: 'cb_actions' },
+                h('button', { className: 'cb_btn ghost', onClick: () => setLogin(null) }, t('cancel')))))
+          : null,
+
+        // ── 登录失败 ──
+        login && login.status === 'failed'
+          ? h('div', { className: 'cb_card panel' },
+            h('div', { className: 'cb_cardhead' },
+              h('span', { className: 'cb_dot err' }),
+              h('span', { className: 'cb_cardname' }, t('failed'))),
+            login.error ? h('div', { className: 'cb_msg err' }, login.error) : null,
+            h('div', null,
+              h('a', { className: 'cb_link', href: login.loginUrl, target: '_blank', rel: 'noreferrer noopener' },
+                t('openManual'))),
+            h('div', { className: 'cb_actions' },
+              h('button', {
+                className: 'cb_btn primary',
+                onClick: () => { setLogin(null); startLogin(login.provider || 'buddy') },
+              }, t('retry')),
+              h('button', { className: 'cb_btn ghost', onClick: () => setLogin(null) }, t('cancel'))))
+          : null,
+
+        // ── 账号分节 ──
+        h('div', { className: 'cb_sec' },
+          h('div', { className: 'cb_sechead' },
+            h('span', { className: 'cb_sec_title' }, t('secAccounts')),
+            h('span', { className: 'cb_sec_hint' }, t('secAccountsHint'))),
+          // 按钮单独一行：cb_sec_hint 有 margin-left:auto，塞进同一行会把按钮挤到左边缘
+          h('div', { className: 'cb_actions' },
             h('button', {
-              className: 'cb-btn', disabled: !!busy,
-              onClick: () => act(a.id, 'setEnabled', { enabled: !a.enabled }),
-            }, a.enabled ? t('disable') : t('enable')),
-            h('button', {
-              className: 'cb-btn', disabled: !!busy,
-              onClick: () => act(a.id, 'delete'),
-            }, t('del'))))) : h('div', { className: 'cb-note' }, t('noAccount')),
-          h('div', { className: 'cb-actions' },
-            h('button', {
-              className: 'cb-btn cb-btn-primary', disabled: !!busy, onClick: () => startLogin('buddy'),
+              className: 'cb_btn primary', disabled: !!busy, onClick: () => startLogin('buddy'),
             }, busy === 'login' ? t('waiting') : t('add')),
             h('button', {
-              className: 'cb-btn', disabled: !!busy, onClick: () => startLogin('workbuddy'),
-            }, t('addWork')))),
+              className: 'cb_btn', disabled: !!busy, onClick: () => startLogin('workbuddy'),
+            }, t('addWork'))),
+          rows.length
+            ? h('div', { className: 'cb_grid' }, rows.map((a) => h('div', {
+              key: a.id, className: 'cb_card' + (a.enabled ? '' : ' dim'),
+            },
+              h('div', { className: 'cb_cardhead' },
+                h('span', { className: 'cb_cardname' }, a.nickname || a.id),
+                h('span', { className: 'cb_badge ' + (a.enabled ? 'on' : 'off') },
+                  a.enabled ? t('enabled') : t('disabled'))),
+              h('div', { className: 'cb_tags' },
+                h('span', { className: 'cb_tag' }, a.refreshable ? t('refreshable') : t('noRefresh')),
+                a.provider ? h('span', { className: 'cb_tag' }, a.provider) : null),
+              h('div', { className: 'cb_metrics' },
+                h('span', null, t('expires') + ' ',
+                  h('b', null, a.expiresAt ? fmtTime(a.expiresAt) : t('noExpiry')))),
+              h('div', { className: 'cb_actions' },
+                h('button', {
+                  className: 'cb_mini', disabled: !!busy,
+                  onClick: () => act(a.id, 'setEnabled', { enabled: !a.enabled }),
+                }, a.enabled ? t('disable') : t('enable')),
+                h('button', {
+                  className: 'cb_mini danger', disabled: !!busy,
+                  onClick: () => act(a.id, 'delete'),
+                }, t('del'))))))
+            : h('div', { className: 'cb_card panel' },
+              h('div', { className: 'cb_empty' },
+                h('b', null, t('noAccount')),
+                h('div', { className: 'cb_note' }, t('noAccountHint'))))),
 
-        // 版本与更新
-        h('div', { className: 'cb-card' },
-          h('div', { className: 'cb-row' },
-            h('span', { className: 'cb-name' }, t('version')),
-            h('span', { className: 'cb-meta' }, ver && ver.version ? ver.version : '—'),
-            update && update.ok
-              ? h('span', { className: 'cb-badge' + (update.available ? '' : ' cb-badge-on') },
-                update.available ? t('updateAvailable') + ' ' + update.remoteVersion : t('upToDate'))
-              : null),
-          h('div', { className: 'cb-actions' },
-            h('button', { className: 'cb-btn', disabled: !!busy || updating, onClick: checkUpdate }, t('checkUpdate')),
-            update && update.available
-              ? h('button', { className: 'cb-btn cb-btn-primary', disabled: updating, onClick: applyUpdate },
-                updating ? t('updating') : t('update'))
-              : null)),
-        h('div', { className: 'cb-note' }, t('reloadHint')))
+        // ── 插件分节 ──
+        h('div', { className: 'cb_sec' },
+          h('div', { className: 'cb_sechead' },
+            h('span', { className: 'cb_sec_title' }, t('secSystem')),
+            h('span', { className: 'cb_sec_hint' }, t('version') + ' ' + version)),
+          h('div', { className: 'cb_card panel' },
+            h('div', { className: 'cb_cardhead' },
+              h('span', { className: 'cb_cardname' }, t('version')),
+              h('span', { className: 'cb_metrics' }, h('b', null, version)),
+              update && update.ok
+                ? h('span', { className: 'cb_badge ' + (update.available ? 'new' : 'on') },
+                  update.available ? t('updateAvailable') + ' ' + update.remoteVersion : t('upToDate'))
+                : null),
+            h('div', { className: 'cb_actions' },
+              h('button', { className: 'cb_btn', disabled: !!busy || updating, onClick: checkUpdate }, t('checkUpdate')),
+              update && update.available
+                ? h('button', { className: 'cb_btn primary', disabled: updating, onClick: applyUpdate },
+                  updating ? t('updating') : t('update'))
+                : null))),
+
+        h('div', { className: 'cb_note' }, t('reloadHint')))
     }
 
     return {
