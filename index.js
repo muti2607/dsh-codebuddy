@@ -40,6 +40,12 @@ import {
 import { PRODUCTS, beginBuddyLogin, completeBuddyLogin, openBrowser } from './src/buddy-login.js'
 import { fetchCreditOverview, claimDailyCredit } from './src/credits.js'
 import {
+  readModelPrefs,
+  setModelEnabled,
+  enableAllModels,
+  applyModelPrefs,
+} from './src/model-prefs.js'
+import {
   readAccounts,
   addAccount,
   updateAccount,
@@ -589,11 +595,15 @@ export function apply(root, config = {}) {
   const cfg = config && typeof config === 'object' ? config : {}
   const logger = root.logger || console
   let teardown = () => {}
+  // modelBridge：模型清单只有 install() 那边才拿得到（要凭据 + 远端目录），
+  // 但 web 路由必须在 apply() 这层注册（同一前缀只能注册一次）。用一个显式
+  // 的小桥把「列模型」从 install() 递给路由，避免共享可变全局或重复实现取数。
+  const modelBridgeForInstall = { list: null }
   // Cordis 规定服务只能在 inject 作用域里取：直接读 root.llm / root.credentials
   // 会抛 "cannot get property ... without inject"，插件整条 entry 都装不上。
   // 依赖缺失时（比如组合里没有 llm）回调挂起而不会失败，正是需要的行为。
   root.inject(['credentials', 'attachments', 'llm'], (scoped) => {
-    teardown = install(scoped, cfg, logger)
+    teardown = install(scoped, cfg, logger, modelBridgeForInstall)
   })
   // 更新检查本身不需要模型服务，单独一条 inject：组合里没有 llm 时
   // 用户仍然能查到有没有新版本。
@@ -605,9 +615,10 @@ export function apply(root, config = {}) {
   // 与模型通道共用同一份账号池文件，登录完下一次请求就能用上，无需重启。
   let loginTeardown = () => {}
   root.inject(['webServer', 'credentials'], (scoped) => {
-    loginTeardown = installLoginRoutes(scoped, cfg, logger)
+    loginTeardown = installLoginRoutes(scoped, cfg, logger, modelBridgeForInstall)
   })
   return () => {
+    modelBridgeForInstall.list = null
     try { teardown?.() } catch { /* ignore */ }
     try { updateTeardown?.() } catch { /* ignore */ }
     try { loginTeardown?.() } catch { /* ignore */ }
@@ -853,7 +864,7 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
  * 凭据写进 DSH 自己的 credentials（`.credentials.yaml`），索引写
  * `$DSH_HOME/dsh-codebuddy/accounts.json`；模型通道下一次请求即生效，无需重启。
  */
-function installLoginRoutes(ctx, cfg, logger) {
+function installLoginRoutes(ctx, cfg, logger, modelBridge) {
   const server = ctx.webServer
   const credentials = ctx.credentials
   if (!server || typeof server.register !== 'function') return () => {}
@@ -924,7 +935,8 @@ function installLoginRoutes(ctx, cfg, logger) {
       if (url.pathname !== '/api/cb/login'
         && url.pathname !== '/api/cb/accounts'
         && url.pathname !== '/api/cb/credits'
-        && url.pathname !== '/api/cb/credits/claim') {
+        && url.pathname !== '/api/cb/credits/claim'
+        && url.pathname !== '/api/cb/models') {
         return json(404, { ok: false, error: 'not-found' })
       }
       try {
@@ -973,6 +985,49 @@ function installLoginRoutes(ctx, cfg, logger) {
             logins.set(accountId, rec)
             finishLogin(rec)   // 后台跑，不阻塞响应
             return json(200, { ok: true, ...publicView(rec) })
+          }
+          return json(405, { ok: false, error: 'method not allowed' })
+        }
+
+        // ---- 模型启用/停用 ----
+        //
+        // GET  → 完整目录 + 每项 enabled
+        // POST → { modelId, enabled }  改单个；{ action: 'enableAll' } 全开
+        //
+        // 偏好只存「被停用」的 id（见 src/model-prefs.js），所以新模型自动可用。
+        // 改完立即生效：listModels 每次都实时按偏好过滤，没有缓存要失效。
+        if (url.pathname === '/api/cb/models') {
+          if (request.method === 'GET') {
+            if (!modelBridge || typeof modelBridge.list !== 'function') {
+              return json(200, { ok: false, error: '模型服务尚未就绪（缺少 llm 服务），请稍后再试' })
+            }
+            const models = await modelBridge.list()
+            const enabledCount = models.filter((m) => m.enabled).length
+            return json(200, {
+              ok: true,
+              models,
+              total: models.length,
+              enabledCount,
+              // 全部停用会让模型选择器里整个分组消失，界面要能提示这件事
+              allDisabled: enabledCount === 0,
+            })
+          }
+          if (request.method === 'POST') {
+            const chunks = []
+            for await (const c of request) chunks.push(c)
+            let body = {}
+            try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { /* ignore */ }
+            if (String(body.action || '') === 'enableAll') {
+              enableAllModels(home())
+              logger.info?.('[codebuddy] 已启用全部模型')
+              return json(200, { ok: true })
+            }
+            const modelId = String(body.modelId || '').trim()
+            if (!modelId) return json(200, { ok: false, error: '缺少 modelId' })
+            const enabled = body.enabled !== false
+            const result = setModelEnabled(home(), modelId, enabled)
+            logger.info?.(`[codebuddy] 模型 ${modelId} 已${enabled ? '启用' : '停用'}`)
+            return json(200, { ok: true, disabled: result.disabled })
           }
           return json(405, { ok: false, error: 'method not allowed' })
         }
@@ -1144,7 +1199,7 @@ function profileDirFromEnv() {
   return null
 }
 
-function install(ctx, cfg, logger) {
+function install(ctx, cfg, logger, modelBridge) {
   const credentialRefName = String(cfg.credentialRef || '').trim()
   // 前缀缓存会话标识：同一进程内所有请求共用，服务端据此复用 KV 前缀缓存。
   const promptCacheKey = (globalThis.crypto?.randomUUID?.() || String(Date.now())).replace(/-/g, '')
@@ -1158,8 +1213,9 @@ function install(ctx, cfg, logger) {
     accountIndex: 0,
     credentialExpiresAt: 0,
     refreshing: null,
-    models: null,
-    modelsAt: 0,
+    // 完整目录（未按启用偏好过滤）：切开关时不需要重新拉远端
+    catalogue: null,
+    catalogueAt: 0,
     meta: new Map(),
   }
 
@@ -1215,8 +1271,8 @@ function install(ctx, cfg, logger) {
     state.accountIndex = (state.accountIndex + 1) % refs.length
     state.credential = null
     state.credentialRef = ''
-    state.models = null
-    state.modelsAt = 0
+    state.catalogue = null
+    state.catalogueAt = 0
     logger.info?.(`[codebuddy] 切换账号 ${state.accountIndex + 1}/${refs.length} 后重试`)
     return true
   }
@@ -1275,8 +1331,8 @@ function install(ctx, cfg, logger) {
     if (state.credential && !sameAccount) {
       logger.info?.(`[codebuddy] 账号已切换（${state.credentialRef} -> ${currentRef}），重新读取凭据`)
       state.credential = null
-      state.models = null
-      state.modelsAt = 0
+      state.catalogue = null
+      state.catalogueAt = 0
     }
     if (state.refreshing) return state.refreshing
     state.refreshing = (async () => {
@@ -1365,16 +1421,30 @@ function install(ctx, cfg, logger) {
     })
   }
 
-  async function ensureModels() {
+  /**
+   * 拉「完整目录」并缓存 10 分钟。
+   *
+   * 注意这里**不做启用/停用过滤**：过滤放在 listModels 里每次实时做。
+   * 否则用户在设置页点一下开关还要等缓存过期才生效，看起来就像没生效。
+   */
+  async function ensureCatalogue() {
     const now = Date.now()
-    if (state.models && now - state.modelsAt < 10 * 60_000) return state.models
+    if (state.catalogue && now - state.catalogueAt < 10 * 60_000) return state.catalogue
     const credential = await ensureCredential()
     const remote = credential ? await fetchModels(credential).catch(() => null) : null
     const source = disambiguateNames(remote && remote.length > 0 ? remote : FALLBACK_MODELS)
     state.meta = new Map(source.map((m) => [m.id, m]))
-    state.models = source.map((m) => ({ id: m.id, name: m.name }))
-    state.modelsAt = now
-    return state.models
+    state.catalogue = source
+    state.catalogueAt = now
+    return state.catalogue
+  }
+
+  /** 兼容旧调用点：返回「已按偏好过滤」的清单。 */
+  async function ensureModels() {
+    const catalogue = await ensureCatalogue()
+    const prefs = readModelPrefs(accountHome())
+    const { models } = applyModelPrefs(catalogue, prefs)
+    return models.filter((m) => m.enabled).map((m) => ({ id: m.id, name: m.name }))
   }
 
   function metaFor(model) {
@@ -1930,6 +2000,18 @@ function install(ctx, cfg, logger) {
     void lastUsage
   }
 
+  // 把「列模型（含启用状态）」交给 web 路由使用。
+  // 用 modelBridge 而不是在这里直接注册路由：`/api/cb` 前缀只能注册一次，
+  // 再注册一个会被先注册的那个遮住（宿主按前缀匹配）。
+  if (modelBridge) {
+    modelBridge.list = async () => {
+      const catalogue = await ensureCatalogue()
+      const prefs = readModelPrefs(accountHome())
+      const { models } = applyModelPrefs(catalogue, prefs)
+      return models.map((m) => ({ id: m.id, name: m.name, enabled: m.enabled !== false }))
+    }
+  }
+
   if (!ctx.llm || typeof ctx.llm.registerAdapter !== 'function') {
     logger.warn?.('[codebuddy] 当前组合没有 llm 服务，渠道未注册')
     return () => {}
@@ -1983,7 +2065,7 @@ function install(ctx, cfg, logger) {
             providers: [PROVIDER, ...aliasOk],
             failedAliases: extraAliases.filter((a) => a && a !== PROVIDER && !aliasOk.includes(a)),
             fallbackModels: FALLBACK_MODELS.length,
-            cachedModels: Array.isArray(state.models) ? state.models.length : 0,
+            cachedModels: Array.isArray(state.catalogue) ? state.catalogue.length : 0,
             hasCredential: !!state.credential,
           })
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })

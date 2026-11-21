@@ -216,11 +216,23 @@ function makeFetch(handlers) {
   }
 }
 
+/** 模型清单桩：默认全部启用。 */
+function makeModels(disabled = []) {
+  const ids = [
+    ['auto', 'Auto'], ['hy4std', 'Hy4'], ['hy4flash', 'Hy4 flash'],
+    ['hy4flash-free', 'Hy4 flash (free)'], ['glm-5.3', 'GLM-5.3'],
+  ]
+  const off = new Set(disabled)
+  const models = ids.map(([id, name]) => ({ id, name, enabled: !off.has(id) }))
+  const enabledCount = models.filter((m) => m.enabled).length
+  return { ok: true, models, total: models.length, enabledCount, allDisabled: enabledCount === 0 }
+}
+
 const scenarios = [
   {
-    name: '已签到 → 余额显示 + 领取按钮禁用',
-    handlers: [
+    name: '已签到 → 余额显示 + 领取按钮禁用',    handlers: [
       ['/api/cb/credits', makeCredits({ total: 460.92, checkedInToday: true, canClaim: false })],
+      ['/api/cb/models', makeModels()],
       ['/api/cb/accounts', BASE_ACCOUNTS],
       ['/api/codebuddy/version', { ok: true, version: '1.4.0' }],
     ],
@@ -241,6 +253,7 @@ const scenarios = [
     name: '未签到 → 领取按钮可点',
     handlers: [
       ['/api/cb/credits', makeCredits({ total: 560.92, checkedInToday: false, canClaim: true })],
+      ['/api/cb/models', makeModels()],
       ['/api/cb/accounts', BASE_ACCOUNTS],
       ['/api/codebuddy/version', { ok: true, version: '1.4.0' }],
     ],
@@ -255,6 +268,7 @@ const scenarios = [
     name: '余额查询失败 → 显示错误不崩',
     handlers: [
       ['/api/cb/credits', makeCredits({ total: 0, checkedInToday: false, canClaim: true, balanceOk: false })],
+      ['/api/cb/models', makeModels()],
       ['/api/cb/accounts', BASE_ACCOUNTS],
       ['/api/codebuddy/version', { ok: true, version: '1.4.0' }],
     ],
@@ -268,6 +282,7 @@ const scenarios = [
     name: '无账号 → 显示空态',
     handlers: [
       ['/api/cb/credits', { ok: false, error: '还没有可用账号，请先添加账号' }],
+      ['/api/cb/models', makeModels()],
       ['/api/cb/accounts', { ok: true, accounts: [], pending: [] }],
       ['/api/codebuddy/version', { ok: true, version: '1.4.0' }],
     ],
@@ -278,6 +293,45 @@ const scenarios = [
         const btn = findByClass(tree, 'cb_btn').find((b) => textOf(b).includes('claim'))
         return btn && btn.props.disabled === true
       })())
+    },
+  },
+  {
+    name: '模型开关 → 渲染全部模型并可切换',
+    handlers: [
+      ['/api/cb/models', makeModels(['hy4flash-free'])],
+      ['/api/cb/credits', makeCredits({ total: 460.92, checkedInToday: true, canClaim: false })],
+      ['/api/cb/accounts', BASE_ACCOUNTS],
+      ['/api/codebuddy/version', { ok: true, version: '1.4.7' }],
+    ],
+    assert(tree) {
+      const rows = findByClass(tree, 'cb_modrow')
+      check('渲染出所有模型行', rows.length === 5, String(rows.length))
+      const names = rows.map((r) => textOf(findByClass(r, 'cb_modname')[0] || r))
+      check('模型名都显示出来', names.some((n) => n.includes('Hy4 flash (free)')), names.join(' | '))
+      const offRows = rows.filter((r) => String(r.props.className).includes('off'))
+      check('停用的那行有 off 标记', offRows.length === 1, String(offRows.length))
+      check('渲染了启用计数文案', textOf(tree).includes('modelsCount'))
+      const enableAllBtn = findByClass(tree, 'cb_btn').find((b) => textOf(b).includes('modelsEnableAll'))
+      check('有「全部启用」按钮', !!enableAllBtn)
+      check('未全启用时「全部启用」可点', enableAllBtn && enableAllBtn.props.disabled === false)
+      check('每个模型行都有开关按钮', findByClass(tree, 'cb_mini').length >= 5,
+        String(findByClass(tree, 'cb_mini').length))
+    },
+  },
+  {
+    name: '全部停用 → 给出警示',
+    handlers: [
+      ['/api/cb/models', makeModels(['auto', 'hy4std', 'hy4flash', 'hy4flash-free', 'glm-5.3'])],
+      ['/api/cb/credits', makeCredits({ total: 0, checkedInToday: false, canClaim: false })],
+      ['/api/cb/accounts', BASE_ACCOUNTS],
+      ['/api/codebuddy/version', { ok: true, version: '1.4.7' }],
+    ],
+    assert(tree) {
+      check('全部停用时出现警示文案', textOf(tree).includes('modelsAllDisabled'))
+      const enableAllBtn = findByClass(tree, 'cb_btn').find((b) => textOf(b).includes('modelsEnableAll'))
+      check('全部停用时「全部启用」可点', enableAllBtn && enableAllBtn.props.disabled === false)
+      const rows = findByClass(tree, 'cb_modrow')
+      check('全部行都是 off', rows.every((r) => String(r.props.className).includes('off')), String(rows.length))
     },
   },
 ]

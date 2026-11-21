@@ -10,6 +10,10 @@
  * 这里用桩 llm 服务跑真实 apply()，断言注册出来的 provider 名与模型名。
  */
 import { apply } from '../index.js'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { writeModelPrefs, readModelPrefs } from '../src/model-prefs.js'
 
 const results = []
 const check = (name, ok, detail) => {
@@ -27,10 +31,28 @@ const REMOTE_MODELS = [
 ]
 
 /** 桩宿主：记录 registerAdapter / registerConfigurableProviders，并允许调 listModels。 */
+const homes = []
+function makeHome() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-prov-'))
+  homes.push(dir)
+  // 账号池要有一项，凭据链才会走到「取远端目录」
+  fs.mkdirSync(path.join(dir, 'dsh-codebuddy'), { recursive: true })
+  fs.writeFileSync(path.join(dir, 'dsh-codebuddy', 'accounts.json'), JSON.stringify({
+    schema: 'dsh-codebuddy/accounts/v1',
+    accounts: [{
+      id: 'acc-1', provider: 'buddy', nickname: 't',
+      credentialRef: 'BUDDY_ACCOUNT_TEST', enabled: true, refreshable: true,
+      createdAt: 1, updatedAt: 1, expiresAt: 0,
+    }],
+  }, null, 2), 'utf8')
+  return dir
+}
+
 function boot({ config = {}, models = REMOTE_MODELS } = {}) {
   const adapters = new Map()
   const configurable = []
   const credential = { access_token: 'tok', user_id: 'uid', refresh_token: 'r' }
+  const home = makeHome()
 
   globalThis.fetch = async (url) => {
     const u = String(url)
@@ -38,6 +60,12 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
       return { ok: true, status: 200, text: async () => JSON.stringify({ code: 0, data: { models } }) }
     }
     return { ok: false, status: 404, text: async () => '{}' }
+  }
+
+  // webServer 桩：把路由规格收集起来，供测试直接调用 handler
+  const routes = []
+  const server = {
+    register(spec) { routes.push(spec); return () => {} },
   }
 
   const scoped = {
@@ -48,9 +76,9 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
     attachments: null,
     // 插件在安装末尾会 `ctx.inject(['webServer'], …)` 挂自检路由；
     // 桩里必须提供 inject 与 webServer，否则 install 直接抛错。
-    webServer: { register() { return () => {} } },
+    webServer: server,
     inject(_deps, cb) { cb(scoped) },
-    get(name) { return name === 'webServer' ? scoped.webServer : null },
+    get(name) { return name === 'webServer' ? server : null },
     llm: {
       registerAdapter(providers, adapter) {
         for (const p of providers) adapters.set(p, adapter)
@@ -66,8 +94,31 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
     inject(_deps, cb) { cb(scoped) },
   }
 
-  const dispose = apply(root, { autoUpdate: false, ...config })
-  return { adapters, configurable, dispose, root }
+  const dispose = apply(root, { autoUpdate: false, dshHome: home, ...config })
+
+  /** 直接调某个前缀路由的 handler，绕过 HTTP 栈。 */
+  async function call(pathname, method = 'GET', payload) {
+    const spec = routes.find((r) => pathname.startsWith(r.path))
+    if (!spec) throw new Error('没有匹配的路由: ' + pathname)
+    const body = payload === undefined ? [] : [Buffer.from(JSON.stringify(payload))]
+    const req = {
+      url: pathname,
+      method,
+      async *[Symbol.asyncIterator]() { for (const chunk of body) yield chunk },
+    }
+    let status = 0
+    let text = ''
+    const res = {
+      writeHead(code) { status = code },
+      end(chunk) { text = String(chunk || '') },
+    }
+    await spec.handler(req, res)
+    let parsed = {}
+    try { parsed = JSON.parse(text || '{}') } catch { parsed = { raw: text } }
+    return { status, body: parsed }
+  }
+
+  return { adapters, configurable, dispose, root, home, call, routes }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -164,6 +215,99 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
   check('无远端时用兜底表', models.length > 0, String(models.length))
   const names = models.map((m) => m.name)
   check('兜底模型名两两不同', new Set(names).size === names.length, names.join(' | '))
+}
+
+// 9) 模型启用/停用：关掉的从 listModels 消失，但已有会话仍能解析
+{
+  const { adapters, home } = boot()
+  const adapter = adapters.get('codebuddy')
+
+  const before = await adapter.listModels('codebuddy')
+  check('初始全部模型可见', before.length === REMOTE_MODELS.length, String(before.length))
+
+  writeModelPrefs(home, { disabled: ['hy4flash-free'] })
+  const after = await adapter.listModels('codebuddy')
+  check('停用后少一个', after.length === before.length - 1, String(after.length))
+  check('停用的模型不在列表里', !after.some((m) => m.id === 'hy4flash-free'),
+    after.map((m) => m.id).join(','))
+
+  // 关键：停用只影响「选择器」，不该让已经在用这个模型的会话突然报错
+  const resolved = await adapter.resolveModel('codebuddy', 'hy4flash-free')
+  check('已停用的模型仍可解析（老会话不炸）', resolved.id === 'hy4flash-free' && resolved.name === 'Hy4 flash (free)',
+    resolved.name)
+  check('已停用的模型仍带上下文窗口', resolved.context && resolved.context.contextWindow > 0)
+
+  // 立即生效：不需要等目录缓存过期
+  writeModelPrefs(home, { disabled: [] })
+  const restored = await adapter.listModels('codebuddy')
+  check('重新启用后立刻回来', restored.length === before.length, String(restored.length))
+
+  // 全部停用 → 空清单（界面据此提示）
+  writeModelPrefs(home, { disabled: REMOTE_MODELS.map((m) => m.id) })
+  const none = await adapter.listModels('codebuddy')
+  check('全部停用时列表为空', none.length === 0, String(none.length))
+}
+
+// 10) 偏好文件损坏不应该让模型列表消失
+{
+  const { adapters, home } = boot()
+  fs.writeFileSync(path.join(home, 'dsh-codebuddy', 'models.json'), '{ broken', 'utf8')
+  const models = await adapters.get('codebuddy').listModels('codebuddy')
+  check('偏好损坏时仍返回完整列表', models.length === REMOTE_MODELS.length, String(models.length))
+  check('损坏的偏好被读成空', readModelPrefs(home).disabled.length === 0)
+}
+
+// 11) 路由：/api/cb/models 的读与写
+{
+  const { call, home } = boot()
+
+  const list = await call('/api/cb/models')
+  check('GET /models 返回 200', list.status === 200, list.status)
+  check('GET /models ok=true', list.body.ok === true)
+  check('GET /models 总数正确', list.body.total === REMOTE_MODELS.length, list.body.total)
+  check('GET /models 初始全启用', list.body.enabledCount === REMOTE_MODELS.length, list.body.enabledCount)
+  check('GET /models 带每项 enabled', (list.body.models || []).every((m) => typeof m.enabled === 'boolean'))
+  check('GET /models 带名字', (list.body.models || []).every((m) => typeof m.name === 'string' && m.name.length > 0))
+  check('初始 allDisabled=false', list.body.allDisabled === false)
+
+  const off = await call('/api/cb/models', 'POST', { modelId: 'hy4flash-free', enabled: false })
+  check('POST 停用返回 200', off.status === 200, off.status)
+  check('POST 停用 ok=true', off.body.ok === true)
+  check('停用写进了偏好文件', readModelPrefs(home).disabled.includes('hy4flash-free'),
+    JSON.stringify(readModelPrefs(home).disabled))
+
+  const after = await call('/api/cb/models')
+  check('停用后计数减一', after.body.enabledCount === REMOTE_MODELS.length - 1, after.body.enabledCount)
+  const target = (after.body.models || []).find((m) => m.id === 'hy4flash-free')
+  check('停用项标记为 false', target && target.enabled === false, JSON.stringify(target))
+
+  const on = await call('/api/cb/models', 'POST', { modelId: 'hy4flash-free', enabled: true })
+  check('POST 启用 ok=true', on.body.ok === true)
+  check('启用后偏好清空该 id', !readModelPrefs(home).disabled.includes('hy4flash-free'))
+
+  // 全部停用 → allDisabled 标记（界面据此给提示）
+  for (const m of REMOTE_MODELS) await call('/api/cb/models', 'POST', { modelId: m.id, enabled: false })
+  const none = await call('/api/cb/models')
+  check('全部停用时 allDisabled=true', none.body.allDisabled === true, none.body.enabledCount)
+  check('全部停用时 enabledCount=0', none.body.enabledCount === 0)
+
+  const all = await call('/api/cb/models', 'POST', { action: 'enableAll' })
+  check('enableAll 返回 ok', all.body.ok === true)
+  const restored = await call('/api/cb/models')
+  check('enableAll 后全部恢复', restored.body.enabledCount === REMOTE_MODELS.length, restored.body.enabledCount)
+
+  const badReq = await call('/api/cb/models', 'POST', {})
+  check('缺 modelId 时 ok=false', badReq.body.ok === false, JSON.stringify(badReq.body))
+
+  const wrongMethod = await call('/api/cb/models', 'PUT')
+  check('PUT 返回 405', wrongMethod.status === 405, wrongMethod.status)
+
+  const unknown = await call('/api/cb/whatever')
+  check('未知路径仍是 404', unknown.status === 404, unknown.status)
+}
+
+for (const dir of homes) {
+  try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
 let bad = 0

@@ -91,6 +91,17 @@ window.__ModuleLoader__.load({
         creditsPackages: '{n} 个有效权益包',
         creditsPerAccount: '各账号余额',
         creditsNoAccount: '登录账号后即可查看积分',
+        // ── 模型开关 ──
+        secModels: '模型',
+        secModelsHint: '关掉的模型不会出现在模型选择器里',
+        modelsCount: '已启用 {n} / {total}',
+        modelsRefresh: '刷新模型',
+        modelsEnableAll: '全部启用',
+        modelsFailed: '模型清单读取失败',
+        modelEnable: '启用',
+        modelDisable: '停用',
+        modelsAllDisabled: '所有模型都已停用，模型选择器里将看不到这个分组；点「全部启用」可恢复。',
+        modelsNote: '改动立即生效。模型选择器如果还显示旧列表，关掉重开一次即可。',
       },
       en: {
         nav: 'CodeBuddy accounts',
@@ -159,6 +170,17 @@ window.__ModuleLoader__.load({
         creditsPackages: '{n} active packages',
         creditsPerAccount: 'Balance per account',
         creditsNoAccount: 'Sign in an account to see credits',
+        // ── model toggles ──
+        secModels: 'Models',
+        secModelsHint: 'Disabled models are hidden from the model picker',
+        modelsCount: '{n} of {total} enabled',
+        modelsRefresh: 'Refresh models',
+        modelsEnableAll: 'Enable all',
+        modelsFailed: 'Could not load the model list',
+        modelEnable: 'Enable',
+        modelDisable: 'Disable',
+        modelsAllDisabled: 'All models are disabled, so this group disappears from the picker. Use "Enable all" to restore.',
+        modelsNote: 'Changes take effect immediately. If the picker still shows the old list, reopen it.',
       },
     }
 
@@ -297,6 +319,14 @@ window.__ModuleLoader__.load({
 .cb_creditrow .cb_num.zero{color:var(--dsw-alias-label-tertiary);font-weight:560}
 .cb_skeleton{height:34px;width:96px;border-radius:9px;background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent),color-mix(in srgb,var(--dsw-alias-bg-layer-3) 70%,transparent),color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent));background-size:200% 100%;animation:cb-shimmer 1.4s ease-in-out infinite}
 @keyframes cb-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+
+/* ── 模型开关 ── */
+.cb_modgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(232px,1fr));gap:2px 14px}
+.cb_modrow{display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid color-mix(in srgb,var(--dsw-alias-border-l1) 70%,transparent);min-width:0}
+.cb_modrow.off{opacity:.55}
+.cb_modname{flex:1;min-width:0;font-size:12.5px;font-weight:540;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cb_modrow.off .cb_modname{text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--dsw-alias-label-tertiary) 70%,transparent)}
+.cb_mini.muted{color:var(--dsw-alias-label-tertiary);border-color:color-mix(in srgb,var(--dsw-alias-border-l1) 90%,transparent)}
 `
 
     function SettingsPage(props) {
@@ -315,6 +345,10 @@ window.__ModuleLoader__.load({
       const [creditsErr, setCreditsErr] = useState('')
       const [claiming, setClaiming] = useState(false)
       const [claimMsg, setClaimMsg] = useState('')
+      // 模型开关：models = /models 的返回（models[] + total + enabledCount）
+      const [models, setModels] = useState(null)
+      const [modelsBusy, setModelsBusy] = useState(false)
+      const [modelsErr, setModelsErr] = useState('')
       const pollRef = useRef(null)
 
       const load = () => api('/accounts').then((data) => {
@@ -338,6 +372,7 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         load()
         loadCredits()
+        loadModels()
         apiMain('/version').then(setVer).catch(() => {})
         return () => { if (pollRef.current) clearInterval(pollRef.current) }
       }, [])
@@ -387,6 +422,55 @@ window.__ModuleLoader__.load({
           load()
         } catch (e) { setError(t('error') + ': ' + String(e.message || e)) }
         finally { setBusy('') }
+      }
+
+      /** 拉模型清单（含每项启用状态）。 */
+      const loadModels = () => {
+        setModelsBusy(true)
+        setModelsErr('')
+        return api('/models', { timeout: 30000 })
+          .then((data) => {
+            if (data && data.ok) setModels(data)
+            else setModelsErr(String((data && data.error) || 'bad-response'))
+          })
+          .catch((e) => setModelsErr(String(e.message || e)))
+          .finally(() => setModelsBusy(false))
+      }
+
+      /**
+       * 切换单个模型的启用状态。
+       *
+       * 先本地翻转再请求：18 个开关手点时，等一次往返会让按钮发木。
+       * 请求失败就用服务端返回覆盖回来，不会留下错误状态。
+       */
+      async function toggleModel(model) {
+        const next = !model.enabled
+        setModels((prev) => {
+          if (!prev) return prev
+          const list = prev.models.map((m) => (m.id === model.id ? { ...m, enabled: next } : m))
+          const enabledCount = list.filter((m) => m.enabled).length
+          return { ...prev, models: list, enabledCount, allDisabled: enabledCount === 0 }
+        })
+        setModelsBusy(true)
+        setModelsErr('')
+        try {
+          const r = await post('/models', { modelId: model.id, enabled: next })
+          if (!r || !r.ok) throw new Error((r && r.error) || 'failed')
+        } catch (e) {
+          setModelsErr(String(e.message || e))
+          loadModels()
+        } finally { setModelsBusy(false) }
+      }
+
+      async function enableAllModels() {
+        setModelsBusy(true)
+        setModelsErr('')
+        try {
+          const r = await post('/models', { action: 'enableAll' })
+          if (!r || !r.ok) throw new Error((r && r.error) || 'failed')
+          loadModels()
+        } catch (e) { setModelsErr(String(e.message || e)) }
+        finally { setModelsBusy(false) }
       }
 
       async function claimCredits() {
@@ -626,6 +710,47 @@ window.__ModuleLoader__.load({
               h('div', { className: 'cb_empty' },
                 h('b', null, t('noAccount')),
                 h('div', { className: 'cb_note' }, t('noAccountHint'))))),
+
+        // ── 模型分节 ──
+        h('div', { className: 'cb_sec' },
+          h('div', { className: 'cb_sechead' },
+            h('span', { className: 'cb_sec_title' }, t('secModels')),
+            h('span', { className: 'cb_sec_hint' },
+              models && models.total
+                ? t('modelsCount')
+                  .replace('{n}', String(models.enabledCount))
+                  .replace('{total}', String(models.total))
+                : t('secModelsHint'))),
+          modelsErr
+            ? h('div', { className: 'cb_msg err' }, t('modelsFailed') + '：' + modelsErr)
+            : null,
+          h('div', { className: 'cb_actions' },
+            h('button', {
+              className: 'cb_btn', disabled: !!busy || modelsBusy, onClick: () => loadModels(),
+            }, modelsBusy ? t('creditsLoading') : t('modelsRefresh')),
+            h('button', {
+              className: 'cb_btn', disabled: !!busy || modelsBusy || !models || models.enabledCount === models.total,
+              onClick: enableAllModels,
+            }, t('modelsEnableAll'))),
+          models && models.allDisabled
+            ? h('div', { className: 'cb_msg err' }, t('modelsAllDisabled'))
+            : null,
+          !models
+            ? h('div', { className: 'cb_card panel' },
+              h('div', { className: 'cb_empty' },
+                h('b', null, modelsErr ? t('modelsFailed') : t('creditsLoading'))))
+            : h('div', { className: 'cb_card panel' },
+              h('div', { className: 'cb_modgrid' }, models.models.map((m) => h('div', {
+                key: m.id,
+                className: 'cb_modrow' + (m.enabled ? '' : ' off'),
+              },
+                h('span', { className: 'cb_modname', title: m.id }, m.name),
+                h('button', {
+                  className: 'cb_mini' + (m.enabled ? '' : ' muted'),
+                  disabled: modelsBusy,
+                  onClick: () => toggleModel(m),
+                }, m.enabled ? t('modelDisable') : t('modelEnable'))))),
+              h('div', { className: 'cb_note' }, t('modelsNote')))),
 
         // ── 插件分节 ──
         h('div', { className: 'cb_sec' },
