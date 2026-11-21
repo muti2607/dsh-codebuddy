@@ -754,10 +754,16 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
         }
         if (url.pathname === '/api/codebuddy/version') {
           const dir = moduleDir()
+          // 顺带报告 Client 半身是否存在：插件更新后若没重启，界面会是旧版，
+          // 这个字段让人能一眼看出「装到了但还没加载」。
+          let clientHalf = false
+          try { clientHalf = fs.existsSync(path.join(dir, 'client.js')) } catch { /* ignore */ }
           return json(200, {
             ok: true,
             version: readLocalVersion(dir),
             repo: REPO,
+            clientHalf,
+            settingsSection: 'dsh-codebuddy',
             // 把实际加载路径暴露出来，便于确认运行的是安装副本还是开发目录
             moduleDir: dir,
             profileDir: profileDirFromEnv(),

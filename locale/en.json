@@ -1,4 +1,6 @@
 {
-  "title": "CodeBuddy free models",
-  "description": "Mounts Tencent CodeBuddy (copilot.tencent.com) free-tier models, reusing the Channel Pack account credential."
+  "meta": {
+    "title": "CodeBuddy free models",
+    "description": "Mounts Tencent CodeBuddy / WorkBuddy free-tier models with built-in browser login (no OFM dependency), account rotation, image input, reasoning effort and self-update."
+  }
 }
