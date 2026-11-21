@@ -1497,39 +1497,61 @@ function install(ctx, cfg, logger) {
   }
 
   /**
-   * 流级重试外壳。
+   * 流级自愈外壳。
    *
    * SSE 读到一半被对端掐断（`terminated` / other side closed）时，fetchPost
-   * 那层已经返回过 response，管不到；只能在这里重来整轮请求。
-   * 安全前提：**还没向模型吐出任何 chunk** —— 否则重来会造成重复输出，
-   * 那时如实报错更有用。最多重试 2 次，退避 500ms/1000ms。
+   * 那层已经返回过 response，管不到；只能在这里重来。
+   *
+   * 两条恢复路径，按「有没有东西已经交给宿主」分流：
+   *
+   *   A. **断点续写**（已交付过正文或工具块）：把已交付的正文作为 assistant
+   *      消息回灌，再用一条 user 指令要求模型从断点接着写。这样宿主收到的
+   *      是一条连续的回答，用户看不出中间断过。
+   *      续写轮会禁用工具（skipTools）——上一轮若已下发完整工具块，续写再生成
+   *      一次就会被执行两遍，所以直接丢弃。
+   *
+   *   B. **整轮重发**（什么都还没交付）：完全安全，用户看不见任何重复。
+   *
+   * 曾经 A 只允许 1 次、且一旦出现过工具块就直接放弃（报「本轮已作废」），
+   * 于是同一条消息常常需要手动重发；现在 A 允许 3 次、B 允许 2 次，并且
+   * 每次之间退避，恢复不动声色。
    */
   async function* streamCall(options) {
-    const MAX_RETRIES = 2
-    const MAX_CONTINUATIONS = 1
+    const MAX_RETRIES = 2          // 整轮重发上限（未交付任何内容时）
+    const MAX_CONTINUATIONS = 3    // 断点续写上限（已交付内容时）
     const INSTRUCTION = 'Your previous reply was cut off mid-way by a dropped connection. '
       + 'Continue exactly where that reply stopped: do not repeat, summarize or restart '
       + 'what was already written; resume the cut sentence and finish the remaining '
       + 'content, then stop. Do not call tools in this continuation.'
+    const baseMessages = Array.isArray(options && options.messages) ? options.messages : []
     let indexOffset = 0
-    let answerText = ''
+    /** 本轮已经交付给宿主的全部正文（续写回灌、判定是否已交付都靠它）。 */
+    let allText = ''
     let sawText = false
     let sawTool = false
     let retries = 0
     let continuations = 0
-    let skipReasoning = false
+    /** 当前这一趟是否「续写轮」——决定是否丢弃工具块。 */
+    let inContinuation = false
     let current = options
+    const exhausted = (reason) => new Error('codebuddy: 上游在' + reason
+      + '断开连接（terminated），已自动重试 ' + (retries + continuations) + ' 次仍未恢复。'
+      + '请重发这条消息。')
+
     for (;;) {
       try {
-        for await (const chunk of streamOnce(current, indexOffset, { skipReasoning })) {
+        for await (const chunk of streamOnce(current, indexOffset, {
+          skipReasoning: continuations > 0 || retries > 0,
+          skipTools: inContinuation,
+        })) {
           if (chunk.type === 'block-start') {
-            if (chunk.blockType === 'tool-call') sawTool = true
+            if (chunk.blockType === 'tool-call' && !inContinuation) sawTool = true
             if (Number.isFinite(chunk.index)) indexOffset = Math.max(indexOffset, chunk.index + 1)
           } else if (chunk.type === 'tool-call-delta') {
-            sawTool = true
+            if (!inContinuation) sawTool = true
           } else if (chunk.type === 'text-delta') {
             sawText = true
-            answerText += String(chunk.text || '')
+            allText += String(chunk.text || '')
           }
           yield chunk
         }
@@ -1540,27 +1562,38 @@ function install(ctx, cfg, logger) {
         if (!isConnectionDeath(error)) throw error
         const interrupted = !!(error && error.codebuddyInterrupted)
 
-        // A. 已产出可见正文、且没有工具块落到宿主手里 → 从断点续写。
-        if (interrupted && sawText && !sawTool && continuations < MAX_CONTINUATIONS) {
+        // A. 已经交付过内容 → 断点续写，宿主侧看到的是一条连续回答。
+        if (interrupted && (sawText || sawTool) && continuations < MAX_CONTINUATIONS) {
           continuations++
-          logger.warn?.('[codebuddy] 响应流中途断开，从断点续写一次')
+          inContinuation = true
+          logger.warn?.('[codebuddy] 响应流中途断开，从断点续写第 '
+            + continuations + '/' + MAX_CONTINUATIONS + ' 次（已交付 ' + allText.length + ' 字'
+            + (sawTool ? '、含工具块' : '') + '）')
+          await new Promise((resolve) => setTimeout(resolve, 400 * continuations))
+          if (options && options.signal && options.signal.aborted) throw error
           current = {
             ...current,
-            messages: [...current.messages,
-              { role: 'assistant', content: [{ type: 'text', text: answerText }] },
+            messages: [
+              ...baseMessages,
+              {
+                role: 'assistant',
+                content: [{
+                  type: 'text',
+                  // 只有工具块、没有正文时给个占位，否则空 content 会让请求非法
+                  text: allText.length > 0
+                    ? allText
+                    : '(the previous reply stopped right after a tool call)',
+                }],
+              },
               { role: 'user', content: [{ type: 'text', text: INSTRUCTION }] },
             ],
           }
-          answerText = ''
-          skipReasoning = true
           continue
         }
 
-        // B. 还没向宿主交付任何可见内容（最多只有思考；工具块按完整才发，
-        //    参数没生成完就不会下发）→ 整轮重发完全安全，用户看不见重复。
+        // B. 什么都没交付 → 整轮重发完全安全，用户看不见重复。
         if (interrupted && !sawText && !sawTool && retries < MAX_RETRIES) {
           retries++
-          skipReasoning = true
           logger.warn?.(`[codebuddy] 输出前断流（${String((error && error.message) || error)}），`
             + `整轮重发第 ${retries}/${MAX_RETRIES} 次`)
           await new Promise((resolve) => setTimeout(resolve, 500 * retries))
@@ -1568,9 +1601,8 @@ function install(ctx, cfg, logger) {
           continue
         }
 
-        // C. 已经交付了完整工具块或一半正文，重来会重复或造成错误执行 → 只能如实报错。
-        throw new Error('codebuddy: 上游在' + (sawTool ? '工具调用已下发后' : '回答中途')
-          + '断开连接（terminated），本轮已作废。请重发这条消息。')
+        // C. 恢复次数用尽 → 只能如实报错（至少要说清已经试过几次）。
+        throw exhausted(sawTool ? '工具调用已下发后' : '回答中途')
       }
     }
   }
@@ -1682,6 +1714,10 @@ function install(ctx, cfg, logger) {
   // 参数里的空对象会被误当成函数体开头。
   async function* consumeSse(response, options, startIndex = 0, opts) {
     const skipReasoning = !!(opts && opts.skipReasoning)
+    // 续写轮禁用工具：上一轮若已经把完整工具块交给宿主，续写再生成一次工具调用
+    // 就会被执行两遍。这里直接丢弃续写轮的 tool_calls，finish 也因此不会报
+    // tool-calls，宿主只拿到「补完的文字」。
+    const skipTools = !!(opts && opts.skipTools)
     if (!response.body) throw new Error('codebuddy: 空响应体')
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
@@ -1810,6 +1846,7 @@ function install(ctx, cfg, logger) {
         }
 
         if (Array.isArray(delta.tool_calls)) {
+          if (skipTools) continue
           for (const call of delta.tool_calls) {
             if (!call || typeof call !== 'object') continue
             const wireIndex = Number(call.index ?? 0)

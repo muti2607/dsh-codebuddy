@@ -316,11 +316,12 @@ async function runCase(accountCount, responses) {
     return new Response(body, { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
   }
   let error = null
+  const chunksSeen = []
   try {
     for await (const _c of fake.adapter.stream({
       model: 'deepseek-v4.1-flash',
       messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-    })) { /* 消费 */ }
+    })) { chunksSeen.push(_c) }
   } catch (e) {
     error = String(e && e.message || e)
   } finally {
@@ -328,7 +329,13 @@ async function runCase(accountCount, responses) {
     fs.rmSync(home, { recursive: true, force: true })
   }
   if (!error) fail('工具块已下发后断流应报错')
-  if (call !== 1) fail('工具块已下发后不该重试，实际请求 ' + call + ' 次')
+  // 行为变更（1.4.5）：工具块下发后不再立刻放弃，而是进入**续写**（最多 3 次）。
+  // 续写轮会 skipTools，所以不会出现「同一工具被执行两遍」；这里断言真正重要的
+  // 不变量：工具块只下发一次、且恢复用尽后如实报错。
+  if (!/已自动重试 3 次/.test(error)) fail('恢复用尽后应说明重试次数，实际: ' + error)
+  if (call !== 4) fail('首次 + 3 次续写，应请求 4 次，实际 ' + call + ' 次')
+  const toolStarts = chunksSeen.filter((c) => c.type === 'block-start' && c.blockType === 'tool-call')
+  if (toolStarts.length !== 1) fail('工具块只能下发 1 次，实际 ' + toolStarts.length)
 }
 
 console.log(JSON.stringify({ ok: !process.exitCode }, null, 2))

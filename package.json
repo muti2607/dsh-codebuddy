@@ -1,6 +1,6 @@
 {
   "name": "dsh-codebuddy",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "type": "module",
   "description": "把腾讯 CodeBuddy / WorkBuddy 的免费模型接进 DSH 模型选择器：内置浏览器登录（不依赖 OFM/channel-pack）、多账号轮换、积分查询与每日领取、图片输入、思考等级、自更新。",
   "keywords": [
@@ -29,7 +29,7 @@
     "./icon": "./icon.svg"
   },
   "scripts": {
-    "test": "node test/verify-adapter.mjs && node test/verify-sse.mjs && node test/verify-updater.mjs && node test/verify-rotation.mjs && node test/verify-update.mjs && node test/verify-login.mjs && node test/verify-credits.mjs && node test/verify-providers.mjs && node test/verify-client.mjs && node test/verify-client-ui.mjs && node test/verify-client-render.mjs",
+    "test": "node test/verify-adapter.mjs && node test/verify-sse.mjs && node test/verify-resume.mjs && node test/verify-updater.mjs && node test/verify-rotation.mjs && node test/verify-update.mjs && node test/verify-login.mjs && node test/verify-credits.mjs && node test/verify-providers.mjs && node test/verify-client.mjs && node test/verify-client-ui.mjs && node test/verify-client-render.mjs",
     "test:route": "node test/verify-credits-route.mjs",
     "test:live": "node test/verify-credits-live.mjs",
     "test:providers": "node test/verify-providers-live.mjs"
