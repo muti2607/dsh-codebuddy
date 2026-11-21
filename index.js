@@ -688,7 +688,10 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
       return {
         ok: false,
         error: source.kind === 'local'
-          ? '当前是本地目录安装（link:），自更新会改写源码树。请改用 github:' + REPO + ' 安装后再启用自更新。'
+          // 措辞必须报出**真实的** spec：早先这里写死成「link:」，而实际是
+          // `file:...tgz`，用户按提示去找 link: 会找不到，反而更困惑。
+          ? `当前是从本地文件安装的（${source.spec}），插件不能自己替换文件。`
+            + `请改用 github:${REPO} 安装后再启用自更新。`
           : '无法确认安装来源，已取消更新。',
         installSource: source,
       }

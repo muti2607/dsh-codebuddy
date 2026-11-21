@@ -22,6 +22,10 @@ const checks = {
   '领取走 /credits/claim': src.includes("api('/credits/claim'"),
   '领取后重查余额': /claimCredits[\s\S]{0,900}loadCredits\(\)/.test(src),
   '不落盘积分': !/localStorage/.test(src),
+  // ── 自更新 ──
+  '只有可更新时才给「立即更新」按钮': /update && update\.available && update\.updatable\s*\?/.test(src),
+  '本地安装时给出重装说明': src.includes('updateLocalHint'),
+  '重装说明含官方命令': src.includes('dsh plugin --profile desktop add github:'),
 }
 let bad = 0
 for (const [k, v] of Object.entries(checks)) {

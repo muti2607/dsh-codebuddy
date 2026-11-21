@@ -62,6 +62,8 @@ window.__ModuleLoader__.load({
         upToDate: '已是最新',
         updateAvailable: '有新版本',
         restartNeeded: '已应用，重启 DSH 后生效',
+        updateLocalHint: '当前是从本地文件安装的，插件不能自己替换文件，所以这里不提供「立即更新」。'
+          + '要启用自更新，请重新安装：dsh plugin --profile desktop add github:muti2607/dsh-codebuddy',
         reloadHint: '登录后即可在模型选择器里选择；若列表未刷新，切换一次模型即可。',
         neverExpire: '长期有效',
         // ── 积分 ──
@@ -127,6 +129,8 @@ window.__ModuleLoader__.load({
         upToDate: 'Up to date',
         updateAvailable: 'Update available',
         restartNeeded: 'Applied — restart DSH to take effect',
+        updateLocalHint: 'Installed from a local file, so the plugin cannot replace itself. '
+          + 'Reinstall to enable self-update: dsh plugin --profile desktop add github:muti2607/dsh-codebuddy',
         reloadHint: 'Models are selectable right after sign-in. If the picker looks stale, switch models once.',
         neverExpire: 'No expiry',
         // ── credits ──
@@ -621,10 +625,17 @@ window.__ModuleLoader__.load({
                 : null),
             h('div', { className: 'cb_actions' },
               h('button', { className: 'cb_btn', disabled: !!busy || updating, onClick: checkUpdate }, t('checkUpdate')),
-              update && update.available
+              // 只有**能真的装**的时候才给「立即更新」按钮。
+              // 本地文件安装（file:/link:）时 updatable=false，这个按钮点了必然失败，
+              // 留着只会让人以为坏了——改成下面一行说明，告诉他该怎么装。
+              update && update.available && update.updatable
                 ? h('button', { className: 'cb_btn primary', disabled: updating, onClick: applyUpdate },
                   updating ? t('updating') : t('update'))
-                : null))),
+                : null),
+            update && update.available && update.updatable === false
+              ? h('div', { className: 'cb_note' }, t('updateLocalHint')
+                + (update.installSource && update.installSource.spec ? '（' + update.installSource.spec + '）' : ''))
+              : null)),
 
         h('div', { className: 'cb_note' }, t('reloadHint')))
     }
