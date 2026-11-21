@@ -7,6 +7,8 @@
  * Run: node verify-codebuddy.mjs
  */
 import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
 
 // 把 index.js 读进来，取内部函数（模块没导出它们，用文本切片 + Function 构造）
 const src = fs.readFileSync(new URL("../index.js", import.meta.url), "utf8")
@@ -229,7 +231,10 @@ const fake = {
   // Cordis 的依赖注入：依赖齐备时才回调
   inject(deps, callback) { callback(fake); return () => {} },
 }
-const dispose = apply(fake, {})
+// 用临时 dshHome 隔离：否则会读到本机真实账号池与「模型停用」偏好，
+// 测试结果就随用户操作而变（曾经因为真实偏好里停用了 5 个模型而误报）。
+const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-adapter-'))
+const dispose = apply(fake, { dshHome: tempHome })
 if (!registered) fail("未注册适配器")
 else {
   const a = registered.adapter

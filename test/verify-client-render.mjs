@@ -334,6 +334,77 @@ const scenarios = [
       check('全部行都是 off', rows.every((r) => String(r.props.className).includes('off')), String(rows.length))
     },
   },
+  {
+    name: '一个账号无签到活动 → 状态分三态并说明原因',
+    handlers: [
+      ['/api/cb/models', makeModels()],
+      ['/api/cb/credits', {
+        ok: true,
+        total: 810.92,
+        accounts: [
+          {
+            accountId: 'buddy-1', provider: 'buddy', nickname: '有充电宝不用去中厅', ok: true,
+            balance: { total: 460.92, expiredTotal: 0, packages: [], available: true, unit: 'credits' },
+            balanceError: '',
+            checkin: {
+              active: true, checkedInToday: true, canClaim: false, streakDays: 25,
+              dailyCredit: 100, weekProgress: [true, true, true, true, true, true, false],
+            },
+            checkinError: '',
+          },
+          {
+            accountId: 'wb-1', provider: 'workbuddy', nickname: 'muti2607', ok: true,
+            balance: { total: 350, expiredTotal: 0, packages: [], available: true, unit: 'credits' },
+            balanceError: '',
+            // 关键：活动未开通。today_checked_in 同样是 false，但这不是「今天没签」
+            checkin: {
+              active: false, checkedInToday: false, canClaim: false, streakDays: 0,
+              dailyCredit: 100, activityName: '', weekProgress: [],
+            },
+            checkinError: '',
+          },
+        ],
+      }],
+      ['/api/cb/accounts', BASE_ACCOUNTS],
+      ['/api/codebuddy/version', { ok: true, version: '1.4.8' }],
+    ],
+    assert(tree) {
+      const text = textOf(tree)
+      check('无活动账号显示「无签到活动」', text.includes('checkinNoActivity'))
+      check('已签账号仍显示「今日已签到」', text.includes('checkedIn'))
+      check('不再误报「今日未签到」', !text.includes('notCheckedIn'), '出现了 notCheckedIn')
+      const claimBtn = findByClass(tree, 'cb_btn').find((b) => textOf(b).includes('claim'))
+      check('无可领取时领取按钮仍禁用', claimBtn && claimBtn.props.disabled === true)
+      check('给出「已领完」的原因', text.includes('claimHintAllDone'))
+      check('同时说明还有账号没活动', text.includes('claimHintSomeInactive'))
+      check('原因渲染在 creditreason 块里', findByClass(tree, 'cb_creditreason').length === 1,
+        String(findByClass(tree, 'cb_creditreason').length))
+    },
+  },
+  {
+    name: '已签到 → 提示「明天再来」而不是「没活动」',
+    handlers: [
+      ['/api/cb/models', makeModels()],
+      ['/api/cb/credits', {
+        ok: true,
+        total: 460.92,
+        accounts: [{
+          accountId: 'buddy-1', provider: 'buddy', nickname: 'A', ok: true,
+          balance: { total: 460.92, expiredTotal: 0, packages: [], available: true, unit: 'credits' },
+          balanceError: '',
+          checkin: { active: true, checkedInToday: true, canClaim: false, streakDays: 25, dailyCredit: 100, weekProgress: [true] },
+          checkinError: '',
+        }],
+      }],
+      ['/api/cb/accounts', BASE_ACCOUNTS],
+      ['/api/codebuddy/version', { ok: true, version: '1.4.8' }],
+    ],
+    assert(tree) {
+      const text = textOf(tree)
+      check('已领完时提示明天再来', text.includes('claimHintAllDone'))
+      check('已领完时不说「没活动」', !text.includes('claimHintNoActivity'))
+    },
+  },
 ]
 
 // 跑「渲染 → effect → 等数据 → 再渲染」，断言落定后的界面

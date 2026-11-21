@@ -83,8 +83,14 @@ window.__ModuleLoader__.load({
         claimAlready: '今日已领取',
         claimInactive: '当前无可领取积分',
         claimFailed: '领取失败',
+        claimHintNoActivity: '没有可领取的积分：当前账号都没有进行中的签到活动',
+        claimHintAllDone: '今天已经领过了，明天再来',
+        claimHintSomeInactive: '另有 {n} 个账号没有签到活动',
         checkedIn: '今日已签到',
         notCheckedIn: '今日未签到',
+        checkinNoActivity: '无签到活动',
+        checkinNoActivityHint: '这个账号在服务端没有进行中的签到活动，所以没有积分可领',
+        checkinAvailable: '可领取',
         streak: '连签 {n} 天',
         dailyCredit: '每日 {n}',
         creditsExpiredHint: '另有 {n} 积分已过期',
@@ -162,8 +168,14 @@ window.__ModuleLoader__.load({
         claimAlready: 'Already claimed today',
         claimInactive: 'Nothing to claim right now',
         claimFailed: 'Claim failed',
+        claimHintNoActivity: 'Nothing to claim: no check-in activity is running for these accounts',
+        claimHintAllDone: 'Already claimed today — come back tomorrow',
+        claimHintSomeInactive: '{n} other account(s) have no check-in activity',
         checkedIn: 'Checked in today',
         notCheckedIn: 'Not checked in today',
+        checkinNoActivity: 'No check-in activity',
+        checkinNoActivityHint: 'The server has no running check-in activity for this account, so there are no credits to claim',
+        checkinAvailable: 'Claimable',
         streak: '{n}-day streak',
         dailyCredit: '{n} per day',
         creditsExpiredHint: '{n} credits already expired',
@@ -308,6 +320,8 @@ window.__ModuleLoader__.load({
 .cb_creditstatus{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
 .cb_creditsep{color:var(--dsw-alias-label-tertiary)}
 .cb_credit_err{color:var(--dsw-alias-state-error-primary)}
+.cb_creditreason{font-size:11px;color:var(--dsw-alias-label-tertiary);text-align:right;line-height:1.45;max-width:34ch}
+.cb_tag.muted{color:var(--dsw-alias-label-tertiary);border-style:dashed;background:transparent}
 .cb_creditactions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .cb_week{display:flex;gap:4px;align-items:center}
 .cb_day{width:14px;height:14px;border-radius:5px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent);flex:none}
@@ -526,8 +540,22 @@ window.__ModuleLoader__.load({
       const expiredTotal = creditRows.reduce((sum, r) => (
         sum + (r.balance && Number.isFinite(r.balance.expiredTotal) ? r.balance.expiredTotal : 0)
       ), 0)
-      // 只要有一个账号「今天还没领」，就认为可以领取（多账号时一键领全部）
+      // 只要有一个账号「活动进行中且今天还没领」，就认为可以领取（多账号时一键领全部）
       const claimable = creditRows.some((r) => r.checkin && r.checkin.canClaim)
+      // 有签到活动的账号：用来区分「都领完了」和「压根没活动」——
+      // 这两种情况都不能点领取，但原因完全不同，含糊过去会让人以为按钮坏了。
+      const activeRows = creditRows.filter((r) => r.checkin && r.checkin.active)
+      const inactiveCount = creditRows.length - activeRows.length
+      const claimHint = (() => {
+        if (claimable) return ''
+        const base = activeRows.length === 0 ? t('claimHintNoActivity') : t('claimHintAllDone')
+        // 混合场景（有的账号在活动期、有的压根没活动）要两个都说，
+        // 否则用户看着「无签到活动」那行会以为漏领了。
+        if (activeRows.length > 0 && inactiveCount > 0) {
+          return `${base} · ${t('claimHintSomeInactive').replace('{n}', String(inactiveCount))}`
+        }
+        return base
+      })()
       const checkedInToday = creditRows.some((r) => r.checkin && r.checkin.checkedInToday)
       const streakDays = creditRows.reduce((max, r) => Math.max(max, (r.checkin && r.checkin.streakDays) || 0), 0)
       const dailyCredit = creditRows.reduce((max, r) => Math.max(max, (r.checkin && r.checkin.dailyCredit) || 0), 0)
@@ -642,14 +670,17 @@ window.__ModuleLoader__.load({
                 h('button', {
                   className: 'cb_btn primary',
                   disabled: claiming || creditsBusy || !claimable,
-                  title: claimable ? '' : t('claimAlready'),
+                  title: claimable ? '' : claimHint,
                   onClick: claimCredits,
                 }, claiming ? t('claiming') : t('claim')),
                 h('button', {
                   className: 'cb_btn',
                   disabled: claiming || creditsBusy,
                   onClick: () => loadCredits(),
-                }, creditsBusy ? t('creditsLoading') : t('creditsRefresh'))))),
+                }, creditsBusy ? t('creditsLoading') : t('creditsRefresh'))),
+              // 不能领取时把原因写出来：「都领完了」和「这个账号没有签到活动」
+              // 是两件事，只把按钮置灰会让人以为功能坏了。
+              claimHint ? h('div', { className: 'cb_creditreason' }, claimHint) : null)),
 
           claimMsg ? h('div', {
             className: 'cb_msg' + (/失败|failed/i.test(claimMsg) ? ' err' : ' ok'),
@@ -664,9 +695,14 @@ window.__ModuleLoader__.load({
                   ? h('span', { className: 'cb_num' + (r.balance && r.balance.total > 0 ? '' : ' zero') },
                     fmtCredit(r.balance ? r.balance.total : 0))
                   : h('span', { className: 'cb_note' }, r.error || t('creditsFailed')),
+                // 三态：活动未开通 ≠ 今天没签。后者可以领，前者没得领。
                 r.checkin
-                  ? h('span', { className: 'cb_tag' },
-                    r.checkin.checkedInToday ? t('checkedIn') : t('notCheckedIn'))
+                  ? h('span', {
+                    className: 'cb_tag' + (r.checkin.active ? '' : ' muted'),
+                    title: r.checkin.active ? '' : t('checkinNoActivityHint'),
+                  }, !r.checkin.active
+                    ? t('checkinNoActivity')
+                    : (r.checkin.checkedInToday ? t('checkedIn') : t('checkinAvailable')))
                   : null)))
             : null),
 

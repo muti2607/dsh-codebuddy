@@ -48,6 +48,12 @@ const checks = {
   '右侧状态块有样式': css.includes('.cb_creditside') && css.includes('.cb_creditstatus'),
   '操作区不再用 margin-left:auto 硬推': !/\.cb_creditactions\{[^}]*margin-left:auto/.test(css),
   'JS 有左侧主体与右侧状态两块': src.includes('cb_creditmain') && src.includes('cb_creditside'),
+  // 三态：活动未开通 ≠ 今天没签。混为一谈会让人以为按钮坏了。
+  '有「无签到活动」文案': src.includes('checkinNoActivity'),
+  '有「可领取」文案': src.includes('checkinAvailable'),
+  '账号行按 active 分三态': /!r\.checkin\.active[\s\S]{0,220}checkinNoActivity/.test(src),
+  '不可领取时说明原因': src.includes('claimHint') && css.includes('.cb_creditreason'),
+  '区分「没活动」与「已领完」': src.includes('claimHintNoActivity') && src.includes('claimHintAllDone'),
 }
 let bad = 0
 for (const [k, v] of Object.entries(checks)) {
