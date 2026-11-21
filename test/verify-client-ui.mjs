@@ -40,6 +40,14 @@ const checks = {
   'JS 有领取按钮': src.includes("t('claim')"),
   '不可领取时按钮禁用': /disabled:[^,}]*!claimable/.test(src),
   '签到状态用状态点': /checkedInToday \? ' ok' : ''/.test(src),
+  // 优先级坑：.cb_card.panel 的 flex-direction:column 会压过单类选择器，
+  // 卡片被排成纵向、内容全挤到右半边（左侧全空）。必须三段选择器 + 显式 row。
+  '积分卡是横向两栏（权重压过 .cb_card.panel）': /\.cb_card\.panel\.cb_credits\{[^}]*flex-direction:row/.test(css),
+  '积分卡左右分开': /\.cb_card\.panel\.cb_credits\{[^}]*justify-content:space-between/.test(css),
+  '左侧主体块有样式': css.includes('.cb_creditmain') && css.includes('.cb_creditlabel'),
+  '右侧状态块有样式': css.includes('.cb_creditside') && css.includes('.cb_creditstatus'),
+  '操作区不再用 margin-left:auto 硬推': !/\.cb_creditactions\{[^}]*margin-left:auto/.test(css),
+  'JS 有左侧主体与右侧状态两块': src.includes('cb_creditmain') && src.includes('cb_creditside'),
 }
 let bad = 0
 for (const [k, v] of Object.entries(checks)) {

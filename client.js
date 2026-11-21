@@ -70,6 +70,7 @@ window.__ModuleLoader__.load({
         secCredits: '积分',
         secCreditsHint: '每日签到可领积分，余额实时查询',
         creditsLeft: '剩余积分',
+        creditsAccounts: '{n} 个账号合计',
         creditsTotal: '共 {n} 积分',
         creditsUnit: '积分',
         creditsLoading: '查询中…',
@@ -137,6 +138,7 @@ window.__ModuleLoader__.load({
         secCredits: 'Credits',
         secCreditsHint: 'Daily check-in grants credits; balance queried live',
         creditsLeft: 'Credits left',
+        creditsAccounts: '{n} accounts total',
         creditsTotal: '{n} credits total',
         creditsUnit: 'credits',
         creditsLoading: 'Querying…',
@@ -268,15 +270,23 @@ window.__ModuleLoader__.load({
 .cb_empty{display:flex;flex-direction:column;gap:4px;padding:18px 6px;text-align:center}
 .cb_empty b{font-size:13px;font-weight:600;color:var(--dsw-alias-label-secondary)}
 
-/* ── 积分 ── */
-.cb_credits{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;padding:16px 17px}
+/* ── 积分 ──
+   注意选择器写成 .cb_card.panel.cb_credits：.cb_card.panel 里有
+   flex-direction:column（权重 0,2,0），单写 .cb_credits（0,1,0）压不住它，
+   卡片会被排成纵向 + align-items:flex-end，结果整块内容挤到右半边、左侧全空。 */
+.cb_card.panel.cb_credits{display:flex;flex-direction:row;align-items:flex-end;justify-content:space-between;gap:22px;flex-wrap:wrap;padding:16px 18px}
+.cb_creditmain{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1 1 240px}
+.cb_creditlabel{font-size:10.5px;font-weight:650;letter-spacing:.55px;text-transform:uppercase;color:var(--dsw-alias-label-tertiary)}
 .cb_creditnum{display:flex;align-items:baseline;gap:7px;min-width:0}
 .cb_creditval{font-size:34px;font-weight:770;letter-spacing:-1.4px;line-height:1;font-variant-numeric:tabular-nums;background:linear-gradient(150deg,var(--dsw-alias-label-primary) 30%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 72%,var(--dsw-alias-label-primary)));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
 .cb_creditunit{font-size:12px;font-weight:600;color:var(--dsw-alias-label-tertiary);padding-bottom:3px}
-.cb_creditmeta{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--dsw-alias-label-tertiary);padding-bottom:2px}
+.cb_creditmeta{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--dsw-alias-label-tertiary)}
 .cb_creditmeta b{color:var(--dsw-alias-label-secondary);font-weight:600;font-variant-numeric:tabular-nums}
-.cb_creditactions{display:flex;gap:8px;margin-left:auto;align-items:center;flex-wrap:wrap}
-.cb_streak{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.cb_creditside{display:flex;flex-direction:column;gap:9px;align-items:flex-end;flex:0 0 auto}
+.cb_creditstatus{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.cb_creditsep{color:var(--dsw-alias-label-tertiary)}
+.cb_credit_err{color:var(--dsw-alias-state-error-primary)}
+.cb_creditactions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .cb_week{display:flex;gap:4px;align-items:center}
 .cb_day{width:14px;height:14px;border-radius:5px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent);flex:none}
 .cb_day.on{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 70%,transparent);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,transparent)}
@@ -504,51 +514,58 @@ window.__ModuleLoader__.load({
               creditRows.length ? t('creditsPerAccount') : t('secCreditsHint'))),
 
           h('div', { className: 'cb_card panel cb_credits' },
-            // 主数字：所有账号有效积分之和
-            creditsBusy && !credits
-              ? h('div', { className: 'cb_skeleton' })
-              : h('div', { className: 'cb_creditnum' },
-                h('span', { className: 'cb_creditval' }, fmtCredit(creditTotal)),
-                h('span', { className: 'cb_creditunit' }, t('creditsUnit'))),
-
-            h('div', { className: 'cb_creditmeta' },
+            // ── 左：余额主体（标签 / 大数字 / 说明）──
+            h('div', { className: 'cb_creditmain' },
+              h('div', { className: 'cb_creditlabel' }, t('creditsLeft')),
               creditsBusy && !credits
-                ? h('span', null, t('creditsLoading'))
-                : creditsErr
-                  ? h('span', { style: { color: 'var(--dsw-alias-state-error-primary)' } },
-                    t('creditsFailed') + '：' + creditsErr)
-                  : h('span', null, t('creditsTotal').replace('{n}', fmtCredit(creditTotal))),
-              // 签到状态：已签 → 绿点 + 连签天数；未签 → 灰点
+                ? h('div', { className: 'cb_skeleton' })
+                : h('div', { className: 'cb_creditnum' },
+                  h('span', { className: 'cb_creditval' }, fmtCredit(creditTotal)),
+                  h('span', { className: 'cb_creditunit' }, t('creditsUnit'))),
+              h('div', { className: 'cb_creditmeta' },
+                creditsBusy && !credits
+                  ? h('span', null, t('creditsLoading'))
+                  : creditsErr
+                    ? h('span', { className: 'cb_credit_err' }, t('creditsFailed') + '：' + creditsErr)
+                    : h('span', null, t('creditsTotal').replace('{n}', fmtCredit(creditTotal))),
+                // 多账号时把「几个账号的合计」说清楚，否则 810.92 会让人以为只有一个号
+                !creditsErr && creditRows.length > 1
+                  ? h('span', null, t('creditsAccounts').replace('{n}', String(creditRows.length)))
+                  : null,
+                expiredTotal > 0
+                  ? h('span', null, t('creditsExpiredHint').replace('{n}', fmtCredit(expiredTotal)))
+                  : null)),
+
+            // ── 右：签到状态 / 本周进度 / 操作 ──
+            h('div', { className: 'cb_creditside' },
               creditRows.length
-                ? h('span', { className: 'cb_streak' },
+                ? h('div', { className: 'cb_creditstatus' },
                   h('span', { className: 'cb_dot' + (checkedInToday ? ' ok' : '') }),
-                  checkedInToday ? t('checkedIn') : t('notCheckedIn'),
-                  streakDays > 0 ? ' · ' + t('streak').replace('{n}', String(streakDays)) : null,
-                  dailyCredit > 0 ? ' · ' + t('dailyCredit').replace('{n}', fmtCredit(dailyCredit)) : null)
-                : null,
-              expiredTotal > 0
-                ? h('span', null, t('creditsExpiredHint').replace('{n}', fmtCredit(expiredTotal)))
+                  h('span', null, checkedInToday ? t('checkedIn') : t('notCheckedIn')),
+                  streakDays > 0 ? h('span', { className: 'cb_creditsep' }, '·') : null,
+                  streakDays > 0 ? h('span', null, t('streak').replace('{n}', String(streakDays))) : null,
+                  dailyCredit > 0 ? h('span', { className: 'cb_creditsep' }, '·') : null,
+                  dailyCredit > 0 ? h('span', null, t('dailyCredit').replace('{n}', fmtCredit(dailyCredit))) : null)
                 : null,
               weekProgress.length
-                ? h('span', { className: 'cb_week' },
+                ? h('div', { className: 'cb_week' },
                   weekProgress.map((on, i) => h('span', {
                     key: 'd' + i, className: 'cb_day' + (on ? ' on' : ''), title: on ? '已签到' : '未签到',
                   })))
-                : null),
-
-            h('div', { className: 'cb_creditactions' },
-              // 领取按钮：只有「活动进行中且今天未领」才可点，避免点了才报「已领」
-              h('button', {
-                className: 'cb_btn primary',
-                disabled: claiming || creditsBusy || !claimable,
-                title: claimable ? '' : t('claimAlready'),
-                onClick: claimCredits,
-              }, claiming ? t('claiming') : t('claim')),
-              h('button', {
-                className: 'cb_btn',
-                disabled: claiming || creditsBusy,
-                onClick: () => loadCredits(),
-              }, creditsBusy ? t('creditsLoading') : t('creditsRefresh')))),
+                : null,
+              h('div', { className: 'cb_creditactions' },
+                // 领取按钮：只有「活动进行中且今天未领」才可点，避免点了才报「已领」
+                h('button', {
+                  className: 'cb_btn primary',
+                  disabled: claiming || creditsBusy || !claimable,
+                  title: claimable ? '' : t('claimAlready'),
+                  onClick: claimCredits,
+                }, claiming ? t('claiming') : t('claim')),
+                h('button', {
+                  className: 'cb_btn',
+                  disabled: claiming || creditsBusy,
+                  onClick: () => loadCredits(),
+                }, creditsBusy ? t('creditsLoading') : t('creditsRefresh'))))),
 
           claimMsg ? h('div', {
             className: 'cb_msg' + (/失败|failed/i.test(claimMsg) ? ' err' : ' ok'),
