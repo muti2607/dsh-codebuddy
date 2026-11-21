@@ -64,6 +64,30 @@ window.__ModuleLoader__.load({
         restartNeeded: '已应用，重启 DSH 后生效',
         reloadHint: '登录后即可在模型选择器里选择；若列表未刷新，切换一次模型即可。',
         neverExpire: '长期有效',
+        // ── 积分 ──
+        secCredits: '积分',
+        secCreditsHint: '每日签到可领积分，余额实时查询',
+        creditsLeft: '剩余积分',
+        creditsTotal: '共 {n} 积分',
+        creditsUnit: '积分',
+        creditsLoading: '查询中…',
+        creditsRefresh: '刷新积分',
+        creditsFailed: '积分查询失败',
+        creditsNoData: '暂无积分数据',
+        claim: '领取积分',
+        claiming: '领取中…',
+        claimDone: '已领取 +{n} 积分',
+        claimAlready: '今日已领取',
+        claimInactive: '当前无可领取积分',
+        claimFailed: '领取失败',
+        checkedIn: '今日已签到',
+        notCheckedIn: '今日未签到',
+        streak: '连签 {n} 天',
+        dailyCredit: '每日 {n}',
+        creditsExpiredHint: '另有 {n} 积分已过期',
+        creditsPackages: '{n} 个有效权益包',
+        creditsPerAccount: '各账号余额',
+        creditsNoAccount: '登录账号后即可查看积分',
       },
       en: {
         nav: 'CodeBuddy accounts',
@@ -105,6 +129,30 @@ window.__ModuleLoader__.load({
         restartNeeded: 'Applied — restart DSH to take effect',
         reloadHint: 'Models are selectable right after sign-in. If the picker looks stale, switch models once.',
         neverExpire: 'No expiry',
+        // ── credits ──
+        secCredits: 'Credits',
+        secCreditsHint: 'Daily check-in grants credits; balance queried live',
+        creditsLeft: 'Credits left',
+        creditsTotal: '{n} credits total',
+        creditsUnit: 'credits',
+        creditsLoading: 'Querying…',
+        creditsRefresh: 'Refresh credits',
+        creditsFailed: 'Credit query failed',
+        creditsNoData: 'No credit data',
+        claim: 'Claim credits',
+        claiming: 'Claiming…',
+        claimDone: 'Claimed +{n} credits',
+        claimAlready: 'Already claimed today',
+        claimInactive: 'Nothing to claim right now',
+        claimFailed: 'Claim failed',
+        checkedIn: 'Checked in today',
+        notCheckedIn: 'Not checked in today',
+        streak: '{n}-day streak',
+        dailyCredit: '{n} per day',
+        creditsExpiredHint: '{n} credits already expired',
+        creditsPackages: '{n} active packages',
+        creditsPerAccount: 'Balance per account',
+        creditsNoAccount: 'Sign in an account to see credits',
       },
     }
 
@@ -215,6 +263,26 @@ window.__ModuleLoader__.load({
 .cb_link:hover{color:color-mix(in srgb,var(--dsw-alias-state-business-primary) 82%,#000)}
 .cb_empty{display:flex;flex-direction:column;gap:4px;padding:18px 6px;text-align:center}
 .cb_empty b{font-size:13px;font-weight:600;color:var(--dsw-alias-label-secondary)}
+
+/* ── 积分 ── */
+.cb_credits{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;padding:16px 17px}
+.cb_creditnum{display:flex;align-items:baseline;gap:7px;min-width:0}
+.cb_creditval{font-size:34px;font-weight:770;letter-spacing:-1.4px;line-height:1;font-variant-numeric:tabular-nums;background:linear-gradient(150deg,var(--dsw-alias-label-primary) 30%,color-mix(in srgb,var(--dsw-alias-state-business-primary) 72%,var(--dsw-alias-label-primary)));-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.cb_creditunit{font-size:12px;font-weight:600;color:var(--dsw-alias-label-tertiary);padding-bottom:3px}
+.cb_creditmeta{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--dsw-alias-label-tertiary);padding-bottom:2px}
+.cb_creditmeta b{color:var(--dsw-alias-label-secondary);font-weight:600;font-variant-numeric:tabular-nums}
+.cb_creditactions{display:flex;gap:8px;margin-left:auto;align-items:center;flex-wrap:wrap}
+.cb_streak{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
+.cb_week{display:flex;gap:4px;align-items:center}
+.cb_day{width:14px;height:14px;border-radius:5px;border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent);flex:none}
+.cb_day.on{background:color-mix(in srgb,var(--dsw-alias-state-success-primary) 70%,transparent);border-color:color-mix(in srgb,var(--dsw-alias-state-success-primary) 55%,transparent)}
+.cb_creditrow{display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--dsw-alias-border-l1);font-size:12px}
+.cb_creditrow:first-of-type{border-top:none}
+.cb_creditrow .cb_cardname{flex:1;font-size:12.5px;font-weight:560}
+.cb_creditrow .cb_num{font-variant-numeric:tabular-nums;font-weight:650;color:var(--dsw-alias-label-primary)}
+.cb_creditrow .cb_num.zero{color:var(--dsw-alias-label-tertiary);font-weight:560}
+.cb_skeleton{height:34px;width:96px;border-radius:9px;background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent),color-mix(in srgb,var(--dsw-alias-bg-layer-3) 70%,transparent),color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent));background-size:200% 100%;animation:cb-shimmer 1.4s ease-in-out infinite}
+@keyframes cb-shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
 `
 
     function SettingsPage(props) {
@@ -227,6 +295,12 @@ window.__ModuleLoader__.load({
       const [ver, setVer] = useState(null)
       const [update, setUpdate] = useState(null)
       const [updating, setUpdating] = useState(false)
+      // 积分：credits = 最近一次 /credits 的返回（含各账号明细与汇总）
+      const [credits, setCredits] = useState(null)
+      const [creditsBusy, setCreditsBusy] = useState(false)
+      const [creditsErr, setCreditsErr] = useState('')
+      const [claiming, setClaiming] = useState(false)
+      const [claimMsg, setClaimMsg] = useState('')
       const pollRef = useRef(null)
 
       const load = () => api('/accounts').then((data) => {
@@ -234,8 +308,22 @@ window.__ModuleLoader__.load({
         else setError(String((data && data.error) || 'bad-response'))
       }).catch((e) => setError(String(e.message || e)))
 
+      /** 拉积分：余额少、单次两个请求，直接查，不做缓存。 */
+      const loadCredits = (quiet) => {
+        if (!quiet) setCreditsBusy(true)
+        setCreditsErr('')
+        return api('/credits', { timeout: 30000 })
+          .then((data) => {
+            if (data && data.ok) setCredits(data)
+            else setCreditsErr(String((data && data.error) || 'bad-response'))
+          })
+          .catch((e) => setCreditsErr(String(e.message || e)))
+          .finally(() => { if (!quiet) setCreditsBusy(false) })
+      }
+
       useEffect(() => {
         load()
+        loadCredits()
         apiMain('/version').then(setVer).catch(() => {})
         return () => { if (pollRef.current) clearInterval(pollRef.current) }
       }, [])
@@ -287,6 +375,30 @@ window.__ModuleLoader__.load({
         finally { setBusy('') }
       }
 
+      async function claimCredits() {
+        setClaiming(true); setClaimMsg('')
+        try {
+          const r = await api('/credits/claim', { method: 'POST', timeout: 60000 })
+          if (!r || !r.ok) throw new Error((r && r.error) || 'claim-failed')
+          const results = r.results || []
+          const gained = Number(r.gained) || 0
+          if (gained > 0) {
+            setClaimMsg(t('claimDone').replace('{n}', String(gained)))
+          } else if (results.some((x) => x.status === 'already-claimed')) {
+            setClaimMsg(t('claimAlready'))
+          } else if (results.every((x) => x.status === 'inactive')) {
+            setClaimMsg(t('claimInactive'))
+          } else {
+            const first = results.find((x) => x.status === 'failed')
+            throw new Error((first && first.message) || t('claimFailed'))
+          }
+          // 领取成功后余额与签到状态都变了，必须重查；否则界面仍是旧的「可领取」
+          loadCredits()
+        } catch (e) {
+          setClaimMsg(t('claimFailed') + ': ' + String(e.message || e))
+        } finally { setClaiming(false) }
+      }
+
       async function checkUpdate() {
         setBusy('check')
         try { setUpdate(await apiMain('/update?force=1', { timeout: 30000 })) }
@@ -309,6 +421,25 @@ window.__ModuleLoader__.load({
       const rows = accounts || []
       const activeCount = rows.filter((a) => a.enabled).length
       const version = ver && ver.version ? ver.version : '—'
+
+      // ── 积分派生值 ──
+      const creditRows = (credits && credits.accounts) || []
+      const creditTotal = credits && Number.isFinite(credits.total) ? credits.total : 0
+      const expiredTotal = creditRows.reduce((sum, r) => (
+        sum + (r.balance && Number.isFinite(r.balance.expiredTotal) ? r.balance.expiredTotal : 0)
+      ), 0)
+      // 只要有一个账号「今天还没领」，就认为可以领取（多账号时一键领全部）
+      const claimable = creditRows.some((r) => r.checkin && r.checkin.canClaim)
+      const checkedInToday = creditRows.some((r) => r.checkin && r.checkin.checkedInToday)
+      const streakDays = creditRows.reduce((max, r) => Math.max(max, (r.checkin && r.checkin.streakDays) || 0), 0)
+      const dailyCredit = creditRows.reduce((max, r) => Math.max(max, (r.checkin && r.checkin.dailyCredit) || 0), 0)
+      const weekProgress = (creditRows.find((r) => r.checkin && r.checkin.weekProgress && r.checkin.weekProgress.length)
+        || {}).checkin?.weekProgress || []
+      const fmtCredit = (n) => {
+        const v = Number(n)
+        if (!Number.isFinite(v)) return '—'
+        return Number.isInteger(v) ? String(v) : v.toFixed(2)
+      }
 
       return h('div', { className: 'cb_root' },
         h('style', null, CSS),
@@ -360,6 +491,79 @@ window.__ModuleLoader__.load({
               }, t('retry')),
               h('button', { className: 'cb_btn ghost', onClick: () => setLogin(null) }, t('cancel'))))
           : null,
+
+        // ── 积分分节 ──
+        h('div', { className: 'cb_sec' },
+          h('div', { className: 'cb_sechead' },
+            h('span', { className: 'cb_sec_title' }, t('secCredits')),
+            h('span', { className: 'cb_sec_hint' },
+              creditRows.length ? t('creditsPerAccount') : t('secCreditsHint'))),
+
+          h('div', { className: 'cb_card panel cb_credits' },
+            // 主数字：所有账号有效积分之和
+            creditsBusy && !credits
+              ? h('div', { className: 'cb_skeleton' })
+              : h('div', { className: 'cb_creditnum' },
+                h('span', { className: 'cb_creditval' }, fmtCredit(creditTotal)),
+                h('span', { className: 'cb_creditunit' }, t('creditsUnit'))),
+
+            h('div', { className: 'cb_creditmeta' },
+              creditsBusy && !credits
+                ? h('span', null, t('creditsLoading'))
+                : creditsErr
+                  ? h('span', { style: { color: 'var(--dsw-alias-state-error-primary)' } },
+                    t('creditsFailed') + '：' + creditsErr)
+                  : h('span', null, t('creditsTotal').replace('{n}', fmtCredit(creditTotal))),
+              // 签到状态：已签 → 绿点 + 连签天数；未签 → 灰点
+              creditRows.length
+                ? h('span', { className: 'cb_streak' },
+                  h('span', { className: 'cb_dot' + (checkedInToday ? ' ok' : '') }),
+                  checkedInToday ? t('checkedIn') : t('notCheckedIn'),
+                  streakDays > 0 ? ' · ' + t('streak').replace('{n}', String(streakDays)) : null,
+                  dailyCredit > 0 ? ' · ' + t('dailyCredit').replace('{n}', fmtCredit(dailyCredit)) : null)
+                : null,
+              expiredTotal > 0
+                ? h('span', null, t('creditsExpiredHint').replace('{n}', fmtCredit(expiredTotal)))
+                : null,
+              weekProgress.length
+                ? h('span', { className: 'cb_week' },
+                  weekProgress.map((on, i) => h('span', {
+                    key: 'd' + i, className: 'cb_day' + (on ? ' on' : ''), title: on ? '已签到' : '未签到',
+                  })))
+                : null),
+
+            h('div', { className: 'cb_creditactions' },
+              // 领取按钮：只有「活动进行中且今天未领」才可点，避免点了才报「已领」
+              h('button', {
+                className: 'cb_btn primary',
+                disabled: claiming || creditsBusy || !claimable,
+                title: claimable ? '' : t('claimAlready'),
+                onClick: claimCredits,
+              }, claiming ? t('claiming') : t('claim')),
+              h('button', {
+                className: 'cb_btn',
+                disabled: claiming || creditsBusy,
+                onClick: () => loadCredits(),
+              }, creditsBusy ? t('creditsLoading') : t('creditsRefresh')))),
+
+          claimMsg ? h('div', {
+            className: 'cb_msg' + (/失败|failed/i.test(claimMsg) ? ' err' : ' ok'),
+          }, claimMsg) : null,
+
+          // 各账号明细
+          creditRows.length
+            ? h('div', { className: 'cb_card panel' },
+              creditRows.map((r) => h('div', { key: r.accountId, className: 'cb_creditrow' },
+                h('span', { className: 'cb_cardname' }, r.nickname || r.accountId),
+                r.ok
+                  ? h('span', { className: 'cb_num' + (r.balance && r.balance.total > 0 ? '' : ' zero') },
+                    fmtCredit(r.balance ? r.balance.total : 0))
+                  : h('span', { className: 'cb_note' }, r.error || t('creditsFailed')),
+                r.checkin
+                  ? h('span', { className: 'cb_tag' },
+                    r.checkin.checkedInToday ? t('checkedIn') : t('notCheckedIn'))
+                  : null)))
+            : null),
 
         // ── 账号分节 ──
         h('div', { className: 'cb_sec' },

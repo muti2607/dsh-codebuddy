@@ -29,6 +29,17 @@ const checks = {
   '登录等待用 busy 点': src.includes("cb_dot busy"),
   '失败态有重试': src.includes("t('retry')"),
   '账号卡含停用与删除': src.includes("'setEnabled'") && src.includes("'delete'"),
+  // ── 积分 ──
+  '积分大数字样式': css.includes('.cb_creditval'),
+  '积分数字用渐变文字': /\.cb_creditval\{[^}]*background-clip:text/.test(css),
+  '积分行样式': css.includes('.cb_creditrow'),
+  '签到周格样式': css.includes('.cb_day') && css.includes('.cb_day.on'),
+  '加载骨架': css.includes('.cb_skeleton') && css.includes('@keyframes cb-shimmer'),
+  'JS 有积分分节': src.includes("secCredits"),
+  'JS 有剩余积分标签': src.includes("creditsLeft"),
+  'JS 有领取按钮': src.includes("t('claim')"),
+  '不可领取时按钮禁用': /disabled:[^,}]*!claimable/.test(src),
+  '签到状态用状态点': /checkedInToday \? ' ok' : ''/.test(src),
 }
 let bad = 0
 for (const [k, v] of Object.entries(checks)) {

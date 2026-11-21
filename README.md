@@ -28,6 +28,43 @@ curl -X POST "http://127.0.0.1:<端口>/api/cb/accounts" -H 'Content-Type: appli
 curl -X POST ".../api/cb/accounts" -d '{"accountId":"<id>","action":"delete"}'   # 凭据一并清除
 ```
 
+## 积分（剩余 + 领取）
+
+CodeBuddy 与 WorkBuddy 都有「每日签到领积分」的活动，插件把余额查询与领取都做进了设置页：
+账号分节上方是**剩余积分**大数字、签到状态、连签天数、本周签到格，以及「领取积分 / 刷新积分」两个按钮。
+多个账号时显示汇总总额，下面按账号逐条列出各自余额。
+
+命令行等价接口：
+
+```bash
+# 查余额 + 签到状态（多个账号一次查完，含汇总 total）
+curl "http://127.0.0.1:<端口>/api/cb/credits"
+# 只查某个账号
+curl "http://127.0.0.1:<端口>/api/cb/credits?accountId=<id>"
+
+# 领取今日积分（只领「今天还没领」的账号；已领过会返回 already-claimed，不算失败）
+curl -X POST "http://127.0.0.1:<端口>/api/cb/credits/claim"
+```
+
+协议是腾讯 IDE 插件用的 billing 端点，**三个都是 POST + 空 JSON body**：
+
+| 端点 | 用途 |
+| --- | --- |
+| `/v2/billing/meter/checkin-activity-status` | 签到活动状态（`today_checked_in`、`streak_days`、`daily_credit`、`week_progress`） |
+| `/v2/billing/meter/get-user-resource` | 积分包列表（`CycleCapacityRemain` 等，按 `Status`/`ExpiredTime` 过滤有效包） |
+| `/v2/billing/meter/daily-checkin` | 领取今日积分（写操作） |
+
+两个实现细节值得记下来，都是踩过的坑：
+
+1. **余额必须读 `*Precise` 字段。** 整数版 `CycleCapacityRemain` 会把 `60.92` 截成 `60`，
+   小数在 `CycleCapacityRemainPrecise` 里（字符串）。只读整数版会少算钱。
+2. **「今天已签到」返回的是 HTTP 400，不是 200。** body 仍是 `{"code":10001,"msg":"今天已签到，请明天再来"}`。
+   若按常规先判 `response.ok` 就抛错，已签到会被显示成「领取失败」——
+   所以解析顺序必须是**先读 body 里的业务码，再看 HTTP 状态**。
+
+领取按钮的可点状态取自服务端的 `today_checked_in && active`，不在客户端自己记日期，
+换设备/跨天都能对上，也不会出现「点了才报已领取」。
+
 ## 安装
 
 在 DSH「插件 → 添加插件」里填本仓库地址，或本地目录：
@@ -114,13 +151,26 @@ Illegal API invocation from an unapproved channel
 ## 测试
 
 ```
-npm test          # 三个脚本依次跑
-node test/verify-adapter.mjs   # 序列化 / 双层净化 / 图片 / 适配器契约
-node test/verify-sse.mjs       # SSE 块协议（6 个用例）
-node test/verify-updater.mjs   # 版本比较 / 安装形态 / 远端查询失败语义
+npm test          # 九个脚本依次跑
+node test/verify-adapter.mjs     # 序列化 / 双层净化 / 图片 / 适配器契约
+node test/verify-sse.mjs         # SSE 块协议（6 个用例）
+node test/verify-updater.mjs     # 版本比较 / 安装形态 / 远端查询失败语义
+node test/verify-rotation.mjs    # 多账号轮换
+node test/verify-update.mjs      # 自更新
+node test/verify-login.mjs       # 登录协议
+node test/verify-credits.mjs     # 积分：请求头 / Precise 字段 / 业务码映射 / 端点互不影响
+node test/verify-client.mjs      # Client 静态检查
+node test/verify-client-ui.mjs   # 视觉与结构检查
 ```
 
 全部离线运行，不需要凭据、不联网。
+
+另外有两个**需要真实凭据**的脚本，不进 `npm test`：
+
+```
+npm run test:route   # 把路由挂在假 webServer 上打真 HTTP，验证 /api/cb/credits 端到端
+npm run test:live    # 只用真实账号查余额与签到状态（只读，不领取）
+```
 
 ## 自动更新
 

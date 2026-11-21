@@ -40,6 +40,8 @@ export const PRODUCTS = {
     endpoint: 'https://copilot.tencent.com',
     apiDomain: 'copilot.tencent.com',
     userAgent: 'CodeBuddyIDE/1.106.1',
+    // billing 端点（积分查询/领取）要求 X-Product-Code，值就是产品代号。
+    productCode: 'codebuddy',
     defaultCredentialRef: 'BUDDY_ACCESS_TOKEN',
     appendSessionParams: false,
     pluginVersion: '',
@@ -50,6 +52,7 @@ export const PRODUCTS = {
     endpoint: 'https://www.workbuddy.ai',
     apiDomain: 'www.workbuddy.ai',
     userAgent: 'WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2',
+    productCode: 'workbuddy',
     defaultCredentialRef: 'WORKBUDDY_ACCESS_TOKEN',
     appendSessionParams: true,
     pluginVersion: '5.5.2',

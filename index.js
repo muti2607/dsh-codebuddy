@@ -38,6 +38,7 @@ import {
   readLocalVersion,
 } from './src/updater.js'
 import { PRODUCTS, beginBuddyLogin, completeBuddyLogin, openBrowser } from './src/buddy-login.js'
+import { fetchCreditOverview, claimDailyCredit } from './src/credits.js'
 import {
   readAccounts,
   addAccount,
@@ -917,7 +918,10 @@ function installLoginRoutes(ctx, cfg, logger) {
         response.end(JSON.stringify(body))
       }
       // 只处理登录相关路径，其余交给更新路由
-      if (url.pathname !== '/api/cb/login' && url.pathname !== '/api/cb/accounts') {
+      if (url.pathname !== '/api/cb/login'
+        && url.pathname !== '/api/cb/accounts'
+        && url.pathname !== '/api/cb/credits'
+        && url.pathname !== '/api/cb/credits/claim') {
         return json(404, { ok: false, error: 'not-found' })
       }
       try {
@@ -967,6 +971,87 @@ function installLoginRoutes(ctx, cfg, logger) {
             finishLogin(rec)   // 后台跑，不阻塞响应
             return json(200, { ok: true, ...publicView(rec) })
           }
+          return json(405, { ok: false, error: 'method not allowed' })
+        }
+
+        // ---- 积分：查询余额 + 签到状态 ----
+        //
+        // GET  ?accountId=  → 一次返回余额与签到状态（两个端点并发、互不影响）
+        // POST ?accountId=  → 领取今日积分
+        //
+        // accountId 可省略：省略时用账号池里第一个可用账号，方便界面「一键查全部」
+        // 之前先看一眼。凭据始终只在 Host 侧解析，绝不回传给浏览器。
+        if (url.pathname === '/api/cb/credits' || url.pathname === '/api/cb/credits/claim') {
+          const wantId = String(url.searchParams.get('accountId') || '')
+          const accounts = readAccounts(home()).filter((a) => a.enabled !== false)
+          if (accounts.length === 0) {
+            return json(200, { ok: false, error: '还没有可用账号，请先添加账号' })
+          }
+          const targets = wantId ? accounts.filter((a) => a.id === wantId) : accounts
+          if (targets.length === 0) {
+            return json(200, { ok: false, error: '账号不存在或已停用' })
+          }
+          const resolveCredential = async (account) => {
+            try {
+              if (!credentials || typeof credentials.resolve !== 'function') return null
+              const resolved = await credentials.resolve(account.credentialRef)
+              if (!resolved || typeof resolved.value !== 'string') return null
+              const parsed = JSON.parse(resolved.value)
+              return parsed && typeof parsed.access_token === 'string' ? parsed : null
+            } catch {
+              return null
+            }
+          }
+
+          if (url.pathname === '/api/cb/credits' && request.method === 'GET') {
+            const rows = await Promise.all(targets.map(async (account) => {
+              const product = PRODUCTS[account.provider] || PRODUCTS.buddy
+              const credential = await resolveCredential(account)
+              const base = {
+                accountId: account.id,
+                provider: account.provider,
+                nickname: account.nickname || '',
+              }
+              if (!credential) {
+                return { ...base, ok: false, error: '凭据不可用，请重新登录该账号' }
+              }
+              try {
+                const overview = await fetchCreditOverview(product, credential)
+                return { ...base, ok: true, ...overview }
+              } catch (error) {
+                return { ...base, ok: false, error: String((error && error.message) || error) }
+              }
+            }))
+            // 汇总：界面顶部一行就能显示「共 X 积分」，免得用户自己加
+            const total = rows.reduce((sum, row) => {
+              const value = row.balance && Number.isFinite(row.balance.total) ? row.balance.total : 0
+              return sum + value
+            }, 0)
+            return json(200, { ok: true, accounts: rows, total: Math.round(total * 100) / 100 })
+          }
+
+          if (url.pathname === '/api/cb/credits/claim' && request.method === 'POST') {
+            const results = []
+            for (const account of targets) {
+              const product = PRODUCTS[account.provider] || PRODUCTS.buddy
+              const credential = await resolveCredential(account)
+              const base = {
+                accountId: account.id,
+                provider: account.provider,
+                nickname: account.nickname || '',
+              }
+              if (!credential) {
+                results.push({ ...base, status: 'failed', message: '凭据不可用，请重新登录该账号', credit: 0 })
+                continue
+              }
+              const result = await claimDailyCredit(product, credential)
+              results.push({ ...base, ...result })
+            }
+            const gained = results.reduce((sum, r) => sum + (r.status === 'claimed' ? r.credit : 0), 0)
+            logger.info?.(`[codebuddy] 领取积分：${results.map((r) => `${r.nickname || r.accountId}=${r.status}`).join(', ')}`)
+            return json(200, { ok: true, results, gained: Math.round(gained * 100) / 100 })
+          }
+
           return json(405, { ok: false, error: 'method not allowed' })
         }
 

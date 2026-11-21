@@ -17,6 +17,11 @@ const checks = {
   '提供停用与删除': src.includes("'setEnabled'") && src.includes("'delete'"),
   '有等待授权文案': src.includes('waiting'),
   '清理轮询定时器': src.includes('clearInterval'),
+  // ── 积分 ──
+  '积分查询走 /credits': src.includes("api('/credits'"),
+  '领取走 /credits/claim': src.includes("api('/credits/claim'"),
+  '领取后重查余额': /claimCredits[\s\S]{0,900}loadCredits\(\)/.test(src),
+  '不落盘积分': !/localStorage/.test(src),
 }
 let bad = 0
 for (const [k, v] of Object.entries(checks)) {
