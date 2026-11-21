@@ -49,6 +49,7 @@ async function runUpdate(spec, script) {
   if (spec === null) dir = makeProfile('github:muti2607/dsh-codebuddy')
   try {
     const manager = fakeManager(script)
+    const routes = []
     let route = null
     const fake = {
       logger: { info: () => {}, warn: () => {} },
@@ -57,10 +58,12 @@ async function runUpdate(spec, script) {
       llm: { registerAdapter() { return { dispose() {} } }, registerConfigurableProviders() {} },
       credentials: { async resolve() { return null }, async set() {} },
       attachments: { async readImageRequest() { throw new Error('no image') } },
-      webServer: { register(r) { route = r; return () => {} } },
+      // 插件会注册多条路由（更新 /api/codebuddy、登录 /api/cb），都要收集
+      webServer: { register(r) { routes.push(r); if (r.path === '/api/codebuddy') route = r; return () => {} } },
       inject(deps, cb) { cb(fake); return () => {} },
     }
     apply(fake, {})
+    if (!route) throw new Error('未注册 /api/codebuddy 更新路由，实际: ' + routes.map((r) => r.path).join(','))
     const call = async (method, url) => {
       let status = 0, out = ''
       await route.handler({ method, url }, { writeHead(c) { status = c }, end(t) { out = String(t) } })
@@ -130,6 +133,7 @@ async function runUpdate(spec, script) {
 // ---- 5. 无 pluginManager：报可执行提示 ----
 {
   const dir = makeProfile('github:muti2607/dsh-codebuddy')
+  const routes = []
   let route = null
   const fake = {
     logger: { info: () => {}, warn: () => {} },
@@ -137,12 +141,13 @@ async function runUpdate(spec, script) {
     llm: { registerAdapter() { return { dispose() {} } }, registerConfigurableProviders() {} },
     credentials: { async resolve() { return null } },
     attachments: { async readImageRequest() { throw new Error('x') } },
-    webServer: { register(r) { route = r; return () => {} } },
+    webServer: { register(r) { routes.push(r); if (r.path === '/api/codebuddy') route = r; return () => {} } },
     inject(d, cb) { cb(fake); return () => {} },
   }
   process.env.DSH_PROFILE_DIR = dir
   try {
     apply(fake, {})
+    if (!route) fail('/api/codebuddy 更新路由未注册')
     let out = ''
     await route.handler({ method: 'POST', url: '/api/codebuddy/update' }, { writeHead() {}, end(t) { out = String(t) } })
     const body = JSON.parse(out)

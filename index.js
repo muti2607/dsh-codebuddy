@@ -37,6 +37,16 @@ import {
   inspectInstallSource,
   readLocalVersion,
 } from './src/updater.js'
+import { PRODUCTS, beginBuddyLogin, completeBuddyLogin, openBrowser } from './src/buddy-login.js'
+import {
+  readAccounts,
+  addAccount,
+  updateAccount,
+  removeAccount,
+  availableAccounts,
+  newCredentialRef,
+  newAccountId,
+} from './src/account-store.js'
 
 const PROVIDER = 'codebuddy'
 const DISPLAY_NAME = 'CodeBuddy (腾讯免费)'
@@ -590,9 +600,16 @@ export function apply(root, config = {}) {
   root.inject(['webServer'], (scoped) => {
     updateTeardown = installUpdateRoutes(scoped, root, cfg, logger)
   })
+  // 登录路由：要写凭据库，所以和 webServer 一起注入 credentials。
+  // 与模型通道共用同一份账号池文件，登录完下一次请求就能用上，无需重启。
+  let loginTeardown = () => {}
+  root.inject(['webServer', 'credentials'], (scoped) => {
+    loginTeardown = installLoginRoutes(scoped, cfg, logger)
+  })
   return () => {
     try { teardown?.() } catch { /* ignore */ }
     try { updateTeardown?.() } catch { /* ignore */ }
+    try { loginTeardown?.() } catch { /* ignore */ }
   }
 }
 
@@ -811,6 +828,200 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
 }
 
 /**
+ * 注册「登录 WorkBuddy / CodeBuddy」路由（原生实现，不依赖 OFM/channel-pack）。
+ *
+ *   POST /api/cb/login      {provider}    起登录：返回 {accountId, loginUrl}，
+ *                                         浏览器自动打开，后台轮询到最长 5 分钟
+ *   GET  /api/cb/login      ?accountId=   轮询登录状态（pending/done/failed）
+ *   GET  /api/cb/accounts                 列出自建账号池（不含任何令牌）
+ *   POST /api/cb/accounts   {action,id}   停用/删除账号
+ *
+ * 路径前缀刻意用 `/api/cb` 而不是 `/api/codebuddy-*`：宿主按前缀匹配路由，
+ * `/api/codebuddy` 会吞掉任何以它为前缀的新路径（更新路由先注册即遮蔽登录），
+ * 而 `/api/cb` 与 `/api/codebuddy` 互不为前缀，两条路由互不干扰。
+ *
+ * 凭据写进 DSH 自己的 credentials（`.credentials.yaml`），索引写
+ * `$DSH_HOME/dsh-codebuddy/accounts.json`；模型通道下一次请求即生效，无需重启。
+ */
+function installLoginRoutes(ctx, cfg, logger) {
+  const server = ctx.webServer
+  const credentials = ctx.credentials
+  if (!server || typeof server.register !== 'function') return () => {}
+
+  const home = () => String(cfg.dshHome || '').trim() || dshHome()
+  /** accountId -> 进行中的登录会话 */
+  const logins = new Map()
+  const LOGIN_TTL_MS = 10 * 60_000
+
+  function sweepLogins() {
+    const now = Date.now()
+    for (const [id, rec] of logins) if (now - rec.startedAt > LOGIN_TTL_MS) logins.delete(id)
+  }
+
+  function publicView(rec) {
+    return {
+      accountId: rec.accountId,
+      provider: rec.provider,
+      status: rec.status,
+      loginUrl: rec.loginUrl,
+      browserOpened: rec.browserOpened,
+      nickname: rec.nickname || '',
+      expiresAt: rec.expiresAt || 0,
+      error: rec.error || '',
+      startedAt: rec.startedAt,
+    }
+  }
+
+  /** 后台把剩余两步跑完：拿到 token+account 后写凭据库并登记账号。 */
+  function finishLogin(rec) {
+    rec.controller = new AbortController()
+    rec.promise = completeBuddyLogin(rec.state, { product: rec.product, signal: rec.controller.signal })
+      .then(async (done) => {
+        if (!credentials || typeof credentials.set !== 'function') {
+          throw new Error('当前组合没有 credentials 服务，无法保存凭据')
+        }
+        await credentials.set(rec.credentialRef, done.credentialJson)
+        addAccount(home(), {
+          id: rec.accountId,
+          provider: rec.provider.id,
+          nickname: done.nickname,
+          credentialRef: rec.credentialRef,
+          expiresAt: done.expiresAt,
+          refreshable: done.refreshable,
+        })
+        rec.status = 'done'
+        rec.nickname = done.nickname
+        rec.expiresAt = done.expiresAt
+        logger.info?.(`[codebuddy] 登录成功：${done.nickname || done.userId || rec.accountId}（${rec.provider.id}）`)
+      })
+      .catch((error) => {
+        rec.status = 'failed'
+        rec.error = String((error && error.message) || error)
+        logger.warn?.(`[codebuddy] 登录未完成：${rec.error}`)
+      })
+  }
+
+  const dispose = server.register({
+    kind: 'prefix',
+    path: '/api/cb',
+    handler: async (request, response) => {
+      const url = new URL(request.url ?? '/', 'http://localhost')
+      const json = (status, body) => {
+        response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' })
+        response.end(JSON.stringify(body))
+      }
+      // 只处理登录相关路径，其余交给更新路由
+      if (url.pathname !== '/api/cb/login' && url.pathname !== '/api/cb/accounts') {
+        return json(404, { ok: false, error: 'not-found' })
+      }
+      try {
+        sweepLogins()
+
+        // ---- 起登录 / 轮询登录 ----
+        if (url.pathname === '/api/cb/login') {
+          if (request.method === 'GET') {
+            const id = url.searchParams.get('accountId') || ''
+            const rec = logins.get(id)
+            if (!rec) return json(200, { ok: false, status: 'unknown', error: '登录会话不存在或已过期，请重新发起登录' })
+            return json(200, { ok: true, ...publicView(rec) })
+          }
+          if (request.method === 'POST') {
+            const productKey = (url.searchParams.get('provider') || 'buddy').trim()
+            const product = PRODUCTS[productKey] || PRODUCTS.buddy
+            // 已有该产品的可用登录只回同一个，避免重复开浏览器
+            sweepLogins()
+            for (const rec of logins.values()) {
+              if (rec.provider.id === product.id && rec.status === 'pending') {
+                return json(200, { ok: true, reused: true, ...publicView(rec) })
+              }
+            }
+            const begun = await beginBuddyLogin({ product })
+            const accountId = newAccountId(product.id)
+            const credentialRef = newCredentialRef(product.id)
+            // 默认替用户直接开浏览器；配置 autoOpenBrowser:false 时只回 loginUrl，
+            // 由界面/调用方自己决定何时打开（也是离线测试的注入口）。
+            const opener = cfg.autoOpenBrowser === false ? async () => false : openBrowser
+            let opened = false
+            try { opened = await opener(begun.loginUrl) } catch { /* UI 还能手动点链接 */ }
+            const rec = {
+              accountId,
+              credentialRef,
+              provider: product,
+              product,
+              state: begun.state,
+              loginUrl: begun.loginUrl,
+              browserOpened: opened,
+              status: 'pending',
+              nickname: '',
+              expiresAt: 0,
+              error: '',
+              startedAt: Date.now(),
+            }
+            logins.set(accountId, rec)
+            finishLogin(rec)   // 后台跑，不阻塞响应
+            return json(200, { ok: true, ...publicView(rec) })
+          }
+          return json(405, { ok: false, error: 'method not allowed' })
+        }
+
+        // ---- 账号池 ----
+        if (request.method === 'GET') {
+          const accounts = readAccounts(home()).map((a) => ({
+            id: a.id,
+            provider: a.provider,
+            nickname: a.nickname || '',
+            enabled: a.enabled !== false,
+            refreshable: a.refreshable !== false,
+            expiresAt: a.expiresAt || 0,
+            createdAt: a.createdAt || 0,
+            // 凭据只报「存不存在」，绝不回传内容
+            hasCredential: (() => {
+              try {
+                return !!(credentials && typeof credentials.resolve === 'function' && a.credentialRef)
+              } catch { return false }
+            })(),
+          }))
+          return json(200, { ok: true, accounts, pending: [...logins.values()].filter((r) => r.status === 'pending').map(publicView) })
+        }
+        if (request.method === 'POST') {
+          const chunks = []
+          for await (const c of request) chunks.push(c)
+          let body = {}
+          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}') } catch { /* ignore */ }
+          const id = String(body.accountId || '')
+          const action = String(body.action || '')
+          const entry = readAccounts(home()).find((a) => a.id === id)
+          if (!entry) return json(200, { ok: false, error: '账号不存在' })
+          if (action === 'delete') {
+            removeAccount(home(), id)
+            try { if (credentials?.unset) await credentials.unset(entry.credentialRef) } catch { /* 已不存在 */ }
+            logger.info?.(`[codebuddy] 已删除账号 ${id}`)
+            return json(200, { ok: true })
+          }
+          if (action === 'setEnabled') {
+            updateAccount(home(), id, { enabled: body.enabled !== false })
+            return json(200, { ok: true })
+          }
+          return json(200, { ok: false, error: '未知操作' })
+        }
+        return json(405, { ok: false, error: 'method not allowed' })
+      } catch (error) {
+        return json(500, { ok: false, error: String((error && error.message) || error) })
+      }
+    },
+  })
+
+  return () => {
+    // 卸载时取消所有在途登录，避免插件已停用还在轮询/回写凭据
+    for (const rec of logins.values()) {
+      try { rec.controller?.abort() } catch { /* ignore */ }
+    }
+    logins.clear()
+    try { dispose?.() } catch { /* ignore */ }
+  }
+}
+
+/**
  * 定位 profile 目录（读依赖声明判断安装形态）。
  *
  * 优先用环境变量；但**宿主进程可能不把 DSH_PROFILE_DIR 传给插件**（实测在
@@ -843,6 +1054,8 @@ function install(ctx, cfg, logger) {
   const credentialRefName = String(cfg.credentialRef || '').trim()
   // 前缀缓存会话标识：同一进程内所有请求共用，服务端据此复用 KV 前缀缓存。
   const promptCacheKey = (globalThis.crypto?.randomUUID?.() || String(Date.now())).replace(/-/g, '')
+  // 插件自己的账号池目录（不依赖 OFM）
+  const accountHome = () => String(cfg.dshHome || '').trim() || dshHome()
 
   const state = {
     credential: null,
@@ -860,20 +1073,36 @@ function install(ctx, cfg, logger) {
    * Channel Pack 里已启用且可用的 buddy 账号引用，按声明顺序。
    * 配了 credentialRef 就只认那一个（用户显式指定，不做轮换）。
    */
+  /**
+   * 可用账号的凭据 ref 列表。
+   *
+   * 顺序：① 插件自己的账号池（`$DSH_HOME/dsh-codebuddy/accounts.json`，
+   * 由内置「登录 WorkBuddy / CodeBuddy」写入，**不依赖 OFM**）；
+   * ② 兼容回退：Channel Pack 的 state.json（已在别处登录过的用户直接可用）。
+   * 配了 credentialRef 就只认那一个（用户显式指定，不做轮换）。
+   */
   function readAccountRefs() {
     if (credentialRefName) return [credentialRefName]
-    // 配置里的 dshHome 优先（可指向别的 profile 做测试/多开）
-    const home = String(cfg.dshHome || '').trim() || dshHome()
-    if (!home) return []
-    const file = path.join(home, 'channel-pack', 'state.json')
+    const home = accountHome()
+    const refs = []
     try {
-      const doc = JSON.parse(fs.readFileSync(file, 'utf8'))
-      return (doc.accounts || [])
-        .filter((a) => a && a.provider === 'buddy' && a.enabled !== false && a.credentialRef)
-        .map((a) => String(a.credentialRef))
-    } catch {
-      return []
+      for (const a of availableAccounts(home, 'buddy')) {
+        if (a.enabled !== false && a.credentialRef) refs.push(String(a.credentialRef))
+      }
+    } catch { /* 自有池读不到就靠回退 */ }
+    const packHome = String(cfg.dshHome || '').trim() || dshHome()
+    if (packHome) {
+      try {
+        const doc = JSON.parse(fs.readFileSync(path.join(packHome, 'channel-pack', 'state.json'), 'utf8'))
+        for (const a of doc.accounts || []) {
+          if (a && a.provider === 'buddy' && a.enabled !== false && a.credentialRef
+            && !refs.includes(String(a.credentialRef))) {
+            refs.push(String(a.credentialRef))
+          }
+        }
+      } catch { /* 没装 OFM / 无该文件：正常情况 */ }
     }
+    return refs
   }
 
   function readAccountRef() {

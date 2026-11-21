@@ -1,8 +1,32 @@
 # dsh-codebuddy — CodeBuddy 免费模型接入
 
-把腾讯 **CodeBuddy**（`copilot.tencent.com`）的免费模型额度接进 DeepSeek Harness 的模型选择器：DeepSeek、GLM、Kimi、MiniMax 等 24 个模型，登录一次即可选用。
+把腾讯 **CodeBuddy**（`copilot.tencent.com`）与 **WorkBuddy**（`www.workbuddy.ai`）的免费模型接进 DeepSeek Harness 的模型选择器：DeepSeek、GLM、Kimi、MiniMax、混元等，**点一下浏览器登录即可选用**。
 
-凭据复用 Channel Pack 已登录的 `buddy` 账号，**不重复实现登录流程**；明文只留在本机凭据库，插件不写日志、不外发。
+**内置原生登录**：协议直接对接官方 IDE 插件端点（`/v2/plugin/auth/state` → 浏览器授权 → 轮询 `auth/token` → `login/account`），**不依赖 OFM / Channel Pack**。凭据写进 DSH 自己的凭据库（`~/.dsh/.credentials.yaml`），账号索引写 `$DSH_HOME/dsh-codebuddy/accounts.json`。为兼容已有环境，仍会回退读取 Channel Pack 的 `buddy` 账号。
+
+## 登录
+
+```bash
+# 起登录：自动打开浏览器，返回 accountId 与登录页
+curl -X POST "http://127.0.0.1:<dsh端口>/api/cb/login?provider=buddy"
+# provider 可选 buddy（CodeBuddy）/ workbuddy（国际版）
+
+# 轮询登录结果（后台最长等 5 分钟，浏览器里点确认即完成）
+curl "http://127.0.0.1:<dsh端口>/api/cb/login?accountId=<上一步返回的 id>"
+
+# 看已登录的账号（只报昵称/过期，绝不回传令牌）
+curl "http://127.0.0.1:<dsh端口>/api/cb/accounts"
+```
+
+浏览器里完成授权后，**下一次请求就生效，无需重启 DSH**。
+
+账号池支持多个账号：遇到 `6004`（频率限制）或 `14018`（额度用尽）会自动切到下一个账号重发，只切一次不连环打穿。停用/删除：
+
+```bash
+curl -X POST "http://127.0.0.1:<端口>/api/cb/accounts" -H 'Content-Type: application/json' \
+  -d '{"accountId":"<id>","action":"setEnabled","enabled":false}'
+curl -X POST ".../api/cb/accounts" -d '{"accountId":"<id>","action":"delete"}'   # 凭据一并清除
+```
 
 ## 安装
 
@@ -14,7 +38,7 @@ https://github.com/muti2607/dsh-codebuddy
 
 装好后在对话框的模型选择器里会出现 **CodeBuddy (腾讯免费)** 分组。
 
-前提：Channel Pack 里已登录 CodeBuddy 账号（`$DSH_HOME/channel-pack/state.json` 里有 `provider === "buddy"` 的条目）。没登录时插件会明确报「没有可用凭据，请先登录」，不会静默失败。
+前提：已经登录过一次（用上面的 `/api/cb/login` 走浏览器授权）。没登录时插件会明确报「没有可用凭据，请先登录」，不会静默失败。已装 Channel Pack 的环境无需重复登录——插件会自动回退读取它的 `buddy` 账号。
 
 ## 为什么单独做一个插件
 
