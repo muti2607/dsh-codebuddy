@@ -146,12 +146,24 @@ Illegal API invocation from an unapproved channel
                         # 另有独立一层「按官方意愿重试」：响应体带
                         # retry_policy.retry=true（如 code 11134）或 429/503
                         # 带 Retry-After 时，等官方时长后精确补发一次
+    aliases: []         # 额外渠道别名，默认空。填 ['buddy'] 可让 `buddy/xxx`
+                        # 这类旧模型 id 继续可用；别名在界面上显示为
+                        # 「CodeBuddy (腾讯免费) · buddy」以免和主渠道混淆
 ```
+
+> **为什么 `aliases` 默认是空**：早先默认注册了 `buddy` 别名，结果模型选择器里
+> 出现**两个都叫「CodeBuddy (腾讯免费)」的分组**，里面的模型一模一样；
+> 而且 `buddy` 本来就是 OFM/channel-pack 自己的 provider 名，默认抢占它会让
+> 两个插件的渠道互相顶替（谁后注册谁生效），行为不稳定。需要兼容旧 id 时再显式打开。
+
+模型名若在远端目录里重复（例如 `hy4flash` 与 `hy4flash-free` 都叫 "Hy4 flash"），
+插件会自动给后面的加后缀，显示为「Hy4 flash」与「Hy4 flash (free)」——
+**模型 id 不变**，所以已保存的会话仍然可用。
 
 ## 测试
 
 ```
-npm test          # 九个脚本依次跑
+npm test          # 十一个脚本依次跑
 node test/verify-adapter.mjs     # 序列化 / 双层净化 / 图片 / 适配器契约
 node test/verify-sse.mjs         # SSE 块协议（6 个用例）
 node test/verify-updater.mjs     # 版本比较 / 安装形态 / 远端查询失败语义
@@ -159,17 +171,20 @@ node test/verify-rotation.mjs    # 多账号轮换
 node test/verify-update.mjs      # 自更新
 node test/verify-login.mjs       # 登录协议
 node test/verify-credits.mjs     # 积分：请求头 / Precise 字段 / 业务码映射 / 端点互不影响
+node test/verify-providers.mjs   # 渠道与模型展示：分组不重复、同名模型消歧
 node test/verify-client.mjs      # Client 静态检查
 node test/verify-client-ui.mjs   # 视觉与结构检查
+node test/verify-client-render.mjs  # 渲染冒烟（桩 React 真跑组件）
 ```
 
 全部离线运行，不需要凭据、不联网。
 
-另外有两个**需要真实凭据**的脚本，不进 `npm test`：
+另外有三个**需要真实凭据**的脚本，不进 `npm test`：
 
 ```
-npm run test:route   # 把路由挂在假 webServer 上打真 HTTP，验证 /api/cb/credits 端到端
-npm run test:live    # 只用真实账号查余额与签到状态（只读，不领取）
+npm run test:route        # 把路由挂在假 webServer 上打真 HTTP，验证 /api/cb/credits 端到端
+npm run test:live         # 只用真实账号查余额与签到状态（只读，不领取）
+npm run test:providers    # 导入「已安装副本」，用真实远端目录验证模型清单
 ```
 
 ## 自动更新
