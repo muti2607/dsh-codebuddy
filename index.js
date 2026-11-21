@@ -40,6 +40,8 @@ import {
 
 const PROVIDER = 'codebuddy'
 const DISPLAY_NAME = 'CodeBuddy (腾讯免费)'
+// removeBundle 用的是包名（bundle name），不是 spec；与 package.json name 一致。
+const BUNDLE_NAME = 'dsh-codebuddy'
 
 const ENDPOINT = 'https://copilot.tencent.com'
 const API_DOMAIN = 'copilot.tencent.com'
@@ -674,15 +676,39 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
       }
     }
     try {
-      const result = await manager.installBundle(INSTALL_SPEC, { enabled: true })
+      // installBundle 对「已装同 spec」返回 already-installed 失败——直接重装
+      // 等于没装（这是自动更新在别人电脑上「不生效」的根因之一）。
+      // 官方路径是先 removeBundle 再 installBundle 才能拉到新提交；
+      // 但必须先试装、确认冲突才移除——否则移除后网络失败会把插件整个删没。
+      let result = await manager.installBundle(INSTALL_SPEC, { enabled: true })
+      let removed = false
+      if (result && result.error && result.error.code === 'already-installed') {
+        if (typeof manager.removeBundle !== 'function') {
+          return { ok: false, error: '当前 pluginManager 无 removeBundle，无法重装更新；请手动执行 dsh plugin --profile desktop add ' + INSTALL_SPEC }
+        }
+        await manager.removeBundle(BUNDLE_NAME)
+        removed = true
+        try {
+          result = await manager.installBundle(INSTALL_SPEC, { enabled: true })
+        } catch (error) {
+          return {
+            ok: false,
+            removed,
+            error: '已移除旧版本但重装失败（' + String((error && error.message) || error) + '）。'
+              + '请手动执行：dsh plugin --profile desktop add ' + INSTALL_SPEC,
+          }
+        }
+      }
       const applied = result?.application === 'applied'
-      logger.info?.(`[codebuddy] 自更新结果: ${result?.application ?? 'unknown'}`)
+      const restart = result?.application === 'restart-required'
+      logger.info?.(`[codebuddy] 自更新结果: ${result?.application ?? 'unknown'}${removed ? '（经移除重装）' : ''}`)
       return {
-        ok: applied || result?.application === 'restart-required',
+        ok: applied || restart,
         application: result?.application,
-        restartRequired: result?.application === 'restart-required',
+        restartRequired: restart,
         version: result?.version,
-        error: result?.error?.diagnostic,
+        error: result?.error?.diagnostic || (result && !applied && !restart ? String(result.error?.code || 'failed') : undefined),
+        removed,
         installSource: source,
       }
     } catch (error) {
@@ -730,15 +756,15 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
 
   // ---- 后台自动检查 ----
   //
-  // 默认开启：启动后延迟一分钟查一次，之后每 intervalHours 小时一次。
-  // 只**检查**不自动装 —— 静默替换正在运行的插件代码会让使用者失去「我装的是
-  // 哪个版本」的掌控，而且 DSH 的部分场景更新需要重启才生效，静默处理会让人
-  // 以为已经好了。发现新版本时记一条 warn 日志（在 DSH 日志里可见），并让
-  // GET /api/codebuddy/update 立刻返回该结论。
+  // 默认开启，并且**默认自动安装**（这正是「像 OFM 那样自动更新」的含义）。
+  // 后台检查发现新版 → 若来源是 github:（可安全重装）就自动 remove+install。
+  // 之前默认 autoInstall=false 是自动更新在别人电脑上「不生效」的主因：
+  // 检查到新版却从不去装，又没有任何界面按钮，只留一条看不见的日志。
+  // 想回到「只检查不装」：配置 autoInstallUpdates: false。
   const autoCfg = {
     enabled: cfg.autoUpdate !== false,
     intervalHours: Number(cfg.updateCheckHours) > 0 ? Number(cfg.updateCheckHours) : 6,
-    autoInstall: cfg.autoInstallUpdates === true,
+    autoInstall: cfg.autoInstallUpdates !== false,
   }
   let timer = null
   if (autoCfg.enabled) {
