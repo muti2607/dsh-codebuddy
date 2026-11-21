@@ -1336,12 +1336,38 @@ function install(ctx, cfg, logger) {
     }
   }
 
+  /**
+   * 消除「同名不同 id」的模型歧义。
+   *
+   * 实测 /v3/config 里 `hy4flash` 与 `hy4flash-free` 的 name **都是 "Hy4 flash"**，
+   * 选择器里就是两行完全一样的字，根本分不清哪个是免费版——用户只能挨个试。
+   *
+   * 规则：同名组里**第一个保持原名**，后面的追加区分后缀——所以显示成
+   * 「Hy4 flash」+「Hy4 flash (free)」，既分得清又不啰嗦。
+   * 后缀优先取 `-free` / `-preview` 这类语义（好读），取不到才回落到 id。
+   * 不硬编码任何具体模型，腾讯以后再加同名模型也会被自动处理。
+   */
+  function disambiguateNames(models) {
+    const seen = new Set()
+    const shortLabel = (id) => {
+      const suffix = String(id).match(/-(free|preview|pro|std|mini|lite)$/)
+      return suffix ? suffix[1] : String(id)
+    }
+    return models.map((m) => {
+      if (!seen.has(m.name)) {
+        seen.add(m.name)
+        return m
+      }
+      return { ...m, name: `${m.name} (${shortLabel(m.id)})` }
+    })
+  }
+
   async function ensureModels() {
     const now = Date.now()
     if (state.models && now - state.modelsAt < 10 * 60_000) return state.models
     const credential = await ensureCredential()
     const remote = credential ? await fetchModels(credential).catch(() => null) : null
-    const source = remote && remote.length > 0 ? remote : FALLBACK_MODELS
+    const source = disambiguateNames(remote && remote.length > 0 ? remote : FALLBACK_MODELS)
     state.meta = new Map(source.map((m) => [m.id, m]))
     state.models = source.map((m) => ({ id: m.id, name: m.name }))
     state.modelsAt = now
@@ -1359,7 +1385,13 @@ function install(ctx, cfg, logger) {
 
   const adapter = {
     providerInfo(provider) {
-      return { id: provider || PROVIDER, name: DISPLAY_NAME }
+      const pid = provider || PROVIDER
+      // 别名必须能一眼和主渠道区分开。
+      //
+      // 早先这里对任何 provider 都返回同一个 DISPLAY_NAME，而默认又注册了
+      // `buddy` 别名，于是模型选择器里出现**两个都叫「CodeBuddy (腾讯免费)」
+      // 的分组**，里面模型一模一样——用户根本无法分辨该选哪个。
+      return { id: pid, name: pid === PROVIDER ? DISPLAY_NAME : `${DISPLAY_NAME} · ${pid}` }
     },
 
     providerRetryPolicy() {
@@ -1872,9 +1904,16 @@ function install(ctx, cfg, logger) {
 
   // 额外别名（可选）：让 `buddy/glm-5.3` 这类 id 也能解析。
   // 逐个独立 try/catch —— 名字被别的插件占用时只跳过该别名。
+  //
+  // **默认不注册任何别名。** 以前默认 `['buddy']`，本意是兼容从 OFM 迁过来的
+  // `buddy/xxx` 模型 id，结果适得其反：
+  //   ① 选择器里多出一个同名分组（onboarding 时的第一次疑惑）；
+  //   ② `buddy` 本来就是 OFM/channel-pack 自己的 provider 名，默认抢占它
+  //      会让两个插件的渠道互相顶替，谁注册得晚谁生效，行为不稳定。
+  // 需要兼容旧 id 时显式配 `aliases: ['buddy']`，界面会用「· buddy」标出来。
   const extraAliases = Array.isArray(cfg.aliases)
     ? cfg.aliases.map((x) => String(x || '').trim()).filter(Boolean)
-    : ['buddy']
+    : []
   const aliasRegistrations = []
   const aliasOk = []
   for (const alias of extraAliases) {
