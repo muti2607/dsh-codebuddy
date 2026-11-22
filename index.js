@@ -865,6 +865,8 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
  * `$DSH_HOME/dsh-codebuddy/accounts.json`；模型通道下一次请求即生效，无需重启。
  */
 function installLoginRoutes(ctx, cfg, logger, modelBridge) {
+    try { setTimeout(() => { Promise.resolve().then(() => ensureCatalogue()).catch(() => {}); }, 0); } catch {}
+
   const server = ctx.webServer
   const credentials = ctx.credentials
   if (!server || typeof server.register !== 'function') return () => {}
@@ -1482,7 +1484,7 @@ function install(ctx, cfg, logger, modelBridge) {
    * 注意这里**不做启用/停用过滤**：过滤放在 listModels 里每次实时做。
    * 否则用户在设置页点一下开关还要等缓存过期才生效，看起来就像没生效。
    */
-  async function ensureCatalogue() {
+  async function ensureCatalogueBlocking() {
     const now = Date.now()
     if (state.catalogue && now - state.catalogueAt < 10 * 60_000) return state.catalogue
     const credential = await ensureCredential()
@@ -1493,6 +1495,53 @@ function install(ctx, cfg, logger, modelBridge) {
     state.catalogueAt = now
     return state.catalogue
   }
+  /* 目录缓存：stale-while-revalidate + 共享 in-flight + 冷启动限时。
+     设置区的模型列表不再被远端目录拉取阻塞：
+     - 缓存有效：直接返回，零网络
+     - 缓存过期：立刻返回旧值，后台静默刷新
+     - 冷启动无缓存：最多等 2500ms，超时先给兜底目录，后台继续拉
+     多个并发请求共享同一次拉取。 */
+  const __cbCatalogueCache = new Map();
+  const __cbCatalogueMiss = Symbol('miss');
+
+  function __cbCatalogueKey(args) {
+    if (!args || args.length === 0) return '';
+    try { return JSON.stringify(args, (k, v) => (typeof v === 'function' ? undefined : v)); }
+    catch { return null; }
+  }
+
+  async function ensureCatalogue(...args) {
+    const key = __cbCatalogueKey(args);
+    if (key === null) return ensureCatalogueBlocking(...args);
+    let entry = __cbCatalogueCache.get(key);
+    if (!entry) {
+      entry = { value: null, at: 0, inflight: null };
+      __cbCatalogueCache.set(key, entry);
+    }
+    const now = Date.now();
+    if (entry.value !== null && now - entry.at < 600000) return entry.value;
+    const stale = entry.value !== null;
+    if (!entry.inflight) {
+      entry.inflight = Promise.resolve()
+        .then(() => ensureCatalogueBlocking(...args))
+        .then((value) => { entry.value = value; entry.at = Date.now(); return value; })
+        .catch((error) => { if (entry.value !== null) return entry.value; throw error; })
+        .finally(() => { entry.inflight = null; });
+    }
+    if (stale) { entry.inflight.catch(() => {}); return entry.value; }
+    const miss = new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(__cbCatalogueMiss), 2500);
+      if (timer && typeof timer.unref === 'function') timer.unref();
+    });
+    const winner = await Promise.race([entry.inflight, miss]);
+    if (winner !== __cbCatalogueMiss) return winner;
+    entry.inflight.catch(() => {});
+    try {
+      if (typeof aliveFallback === 'function') return aliveFallback();
+    } catch {}
+    return [];
+  }
+
 
   /** 兼容旧调用点：返回「已按偏好过滤」的清单。 */
   async function ensureModels() {

@@ -125,7 +125,7 @@ async function postJson(product, credential, path, signal) {
   const combined = signal && typeof AbortSignal.any === 'function'
     ? AbortSignal.any([signal, timeout])
     : timeout
-  const response = await fetch(`${product.endpoint}${path}`, {
+  const response = await fetchWithTimeout(`${product.endpoint}${path}`, {
     method: 'POST',
     headers: creditHeaders(product, credential),
     body: '{}',
@@ -226,7 +226,7 @@ export async function fetchCreditBalance(product, credential, signal) {
  * @returns {Promise<{status:'claimed'|'already-claimed'|'inactive'|'failed',
  *   credit:number, streakDays:number, message:string}>}
  */
-export async function claimDailyCredit(product, credential, signal) {
+async function __raw_claimDailyCredit(product, credential, signal) {
   let body
   try {
     body = await postJson(product, credential, DAILY_CHECKIN_PATH, signal)
@@ -259,7 +259,7 @@ export async function claimDailyCredit(product, credential, signal) {
  * 两个端点互不依赖，并发发；任一失败只影响自己那一半，
  * 不把整个结果打成错误（余额查不到时仍能显示签到进度）。
  */
-export async function fetchCreditOverview(product, credential, signal) {
+async function __raw_fetchCreditOverview(product, credential, signal) {
   const [balance, checkin] = await Promise.all([
     fetchCreditBalance(product, credential, signal).then(
       (value) => ({ ok: true, value }),
@@ -277,5 +277,86 @@ export async function fetchCreditOverview(product, credential, signal) {
     checkin: checkin.ok ? checkin.value : null,
     checkinError: checkin.ok ? '' : checkin.error,
     fetchedAt: Date.now(),
+  }
+}
+
+
+const __CREDIT_TTL_MS = 30000;
+const __creditCache = new Map();
+const __creditInflight = new Map();
+
+export function invalidateCreditCache() {
+  __creditCache.clear();
+  __creditInflight.clear();
+}
+
+export async function fetchCreditOverview(product, credential, signal) {
+  const key = JSON.stringify([product, credential, signal]);
+  const hit = __creditCache.get(key);
+  if (hit && Date.now() - hit.at < __CREDIT_TTL_MS) return hit.value;
+  const running = __creditInflight.get(key);
+  if (running) return running;
+  const task = (async () => {
+    try {
+      const value = await __raw_fetchCreditOverview(product, credential, signal);
+      if (value && typeof value === 'object' && !value.error) {
+        __creditCache.set(key, { at: Date.now(), value });
+      }
+      return value;
+    } finally {
+      __creditInflight.delete(key);
+    }
+  })();
+  __creditInflight.set(key, task);
+  return task;
+}
+
+export async function claimDailyCredit(product, credential, signal) {
+  try {
+    return await __raw_claimDailyCredit(product, credential, signal);
+  } finally {
+    invalidateCreditCache();
+  }
+}
+
+
+/**
+ * 带超时的 fetch：上游 billing 接口一旦变慢或挂住，
+ * 必须在有限时间内失败，绝不能让设置区的积分卡片无限期等待。
+ *
+ * 调用方传入的 signal 必须继续生效（取消请求时立刻停），
+ * 所以这里把外部 signal 与超时 signal 合并，而不是覆盖掉。
+ */
+async function fetchWithTimeout(input, init = {}, timeoutMs = 4000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    try {
+      controller.abort();
+    } catch {}
+  }, timeoutMs);
+  const outer = init.signal;
+  let signal = controller.signal;
+  if (outer) {
+    if (typeof AbortSignal.any === 'function') {
+      signal = AbortSignal.any([outer, controller.signal]);
+    } else if (typeof outer.addEventListener === 'function') {
+      if (outer.aborted) controller.abort();
+      else outer.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
+  try {
+    return await fetch(input, { ...init, signal });
+  } catch (error) {
+    // 只有「超时触发、且不是调用方主动取消」才包装成超时错误；
+    // 调用方取消时原样抛 AbortError，让上层按取消处理。
+    if (controller.signal.aborted && !(outer && outer.aborted)) {
+      const timeoutError = new Error('上游接口超时（' + timeoutMs + 'ms）：' + String(input));
+      timeoutError.name = 'TimeoutError';
+      timeoutError.code = 'ETIMEDOUT';
+      throw timeoutError;
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
 }

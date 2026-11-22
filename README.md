@@ -259,6 +259,28 @@ MIT
 
 ## 更新日志
 
+### 1.5.2
+
+设置区打开时的卡顿，根因不是网络慢，而是「冷启动那一次必须等完整远端目录」：
+`ensureCatalogue` 只有 10 分钟缓存，一旦过期或进程刚起，列表请求就被远端串行阻塞。
+
+- **模型目录改为 stale-while-revalidate**：缓存有效直接返回（零网络）；缓存过期
+  立刻返回旧值并在后台静默刷新；冷启动无缓存时最多等 2.5 秒，超时先给已按
+  `RETIRED_MODEL_IDS` 过滤的兜底目录，远端继续在后台拉，下次请求即命中。
+  并发请求共享同一次拉取，不会打出一串重复的 `/v3/config`。
+- **装载时异步预热**：`installLoginRoutes` 起来就丢一个 `setTimeout(…, 0)` 去暖目录，
+  避免第一个打开设置区的人替所有人等。
+- **积分卡片加了超时闸**：`src/credits.js` 的上游请求统一走 `fetchWithTimeout`
+  （`AbortController` + 4 秒，`finally` 清定时器）。超时抛 `TimeoutError`，
+  不再无限期转圈；调用方自己取消时仍原样抛 `AbortError`，不会被误判成超时。
+- **积分结果缓存 30 秒 + in-flight 去重**：`POST /api/cb/credits/claim` 会主动失效缓存，
+  领完立刻能看到新余额。
+- 新增 `verify-credits-timeout`、`verify-credits-cache` 两套件：前者用「只有 abort 才
+  settle」的 mock fetch 验证 4 秒闸与取消传播，后者用对象身份验证缓存命中、失效与并发共享。
+
+实测（本机 GUI）：`GET /api/cb/models` 中位数 2ms、最差 34ms；
+`GET /api/cb/credits` 中位数 4ms，仅冷启动首次 476ms。
+
 ### 1.5.0
 
 - 修复 `hy4free` 报 `11102 model service info not found` 的崩溃：该模型已被上游下线，
