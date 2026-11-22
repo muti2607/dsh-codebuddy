@@ -55,6 +55,12 @@ import {
   newAccountId,
 } from './src/account-store.js'
 import { readSnapshot, writeSnapshot, dropSnapshot } from './src/snapshot-cache.js'
+import {
+  readLocalCredential,
+  hasLocalCredential,
+  writeLocalCredential,
+  deleteLocalCredential,
+} from './src/credential-store.js'
 import { scheduleHeartbeat, readState as readTelemetryState, readInstallId, DEFAULT_TELEMETRY_URL } from './src/heartbeat.js'
 
 const PROVIDER = 'codebuddy'
@@ -951,6 +957,56 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
   const home = () => String(cfg.dshHome || '').trim() || dshHome()
 
   /**
+   * 统一的凭据读取：先看插件自己的库，再回落到 DSH 的 credentials 服务。
+   *
+   * 顺序是「本地优先」：我们自己写的永远是最新的（续期后的 token 会写回来），
+   * 而服务里可能有旧值。老用户的凭据只在服务里，本地没有，因此回落这一步
+   * 是必须的——不能因为上了本地库就让已登录的人掉线。
+   */
+  const resolveCredValue = async (ref) => {
+    if (!ref) return null
+    const local = readLocalCredential(home(), ref)
+    if (local !== null) return { value: local }
+    try {
+      const svc = getCredentials()
+      if (!svc) return null
+      const resolved = await svc.resolve(ref)
+      return resolved && typeof resolved.value === 'string' ? resolved : null
+    } catch { return null }
+  }
+
+  /**
+   * 统一的凭据写入：**一定**写本地库，服务存在就同时写一份。
+   *
+   * 之所以不再「服务缺失就抛错」，是因为对方的机器上根本没有那个服务，
+   * 结果浏览器授权成功后卡在保存这一步，账号列表永远为空。
+   * 凭据存在哪里不该由组合是否装了某个插件来决定。
+   */
+  const saveCredValue = async (ref, value) => {
+    writeLocalCredential(home(), ref, value)
+    try {
+      const svc = getCredentials()
+      if (svc && typeof svc.set === 'function') await svc.set(ref, value)
+    } catch { /* 服务写失败无所谓，本地已经存住了 */ }
+  }
+
+  /** 删除凭据：两边都清，谁不存在都不报错。 */
+  const dropCredValue = async (ref) => {
+    deleteLocalCredential(home(), ref)
+    try {
+      const svc = getCredentials()
+      if (svc?.unset) await svc.unset(ref)
+    } catch { /* 已不存在 */ }
+  }
+
+  /** 这条 ref 是否真的存过凭据（只看"有没有"，不读内容）。 */
+  const credValueExists = (ref) => {
+    if (!ref) return false
+    if (hasLocalCredential(home(), ref)) return true
+    try { return !!getCredentials() } catch { return false }
+  }
+
+  /**
    * 装载后异步预热积分，让「第一次打开设置区」不必自己等上游。
    *
    * 快照能救「装过并用过」的机器，但**全新机器第一次**没有任何快照可读，
@@ -966,11 +1022,9 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
         try {
           const list = readAccounts(home()).filter((a) => a.enabled !== false)
           if (list.length === 0) return
-          const preCred = getCredentials()
-          if (!preCred) return
           await Promise.all(list.map(async (account) => {
             try {
-              const resolved = await preCred.resolve(account.credentialRef)
+              const resolved = await resolveCredValue(account.credentialRef)
               if (!resolved || typeof resolved.value !== 'string') return
               const parsed = JSON.parse(resolved.value)
               if (!parsed || typeof parsed.access_token !== 'string') return
@@ -1014,11 +1068,10 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
     rec.controller = new AbortController()
     rec.promise = completeBuddyLogin(rec.state, { product: rec.product, signal: rec.controller.signal })
       .then(async (done) => {
-        const saveCred = getCredentials()
-        if (!saveCred || typeof saveCred.set !== 'function') {
-          throw new Error('当前组合没有 credentials 服务，无法保存凭据')
-        }
-        await saveCred.set(rec.credentialRef, done.credentialJson)
+        // 不再因为「没有 credentials 服务」而失败：凭据写进插件自己的库，
+        // 服务存在就顺带写一份。这条曾经是「浏览器显示登录成功、账号列表却
+        // 永远是空的」的唯一原因。
+        await saveCredValue(rec.credentialRef, done.credentialJson)
         addAccount(home(), {
           id: rec.accountId,
           provider: rec.provider.id,
@@ -1168,9 +1221,7 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
           }
           const resolveCredential = async (account) => {
             try {
-              const cred = getCredentials()
-              if (!cred) return null
-              const resolved = await cred.resolve(account.credentialRef)
+              const resolved = await resolveCredValue(account.credentialRef)
               if (!resolved || typeof resolved.value !== 'string') return null
               const parsed = JSON.parse(resolved.value)
               return parsed && typeof parsed.access_token === 'string' ? parsed : null
@@ -1263,11 +1314,7 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
             expiresAt: a.expiresAt || 0,
             createdAt: a.createdAt || 0,
             // 凭据只报「存不存在」，绝不回传内容
-            hasCredential: (() => {
-              try {
-                return !!(getCredentials() && a.credentialRef)
-              } catch { return false }
-            })(),
+            hasCredential: credValueExists(a.credentialRef),
           }))
           return json(200, { ok: true, accounts, pending: [...logins.values()].filter((r) => r.status === 'pending').map(publicView) })
         }
@@ -1282,7 +1329,7 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
           if (!entry) return json(200, { ok: false, error: '账号不存在' })
           if (action === 'delete') {
             removeAccount(home(), id)
-            try { const c = getCredentials(); if (c?.unset) await c.unset(entry.credentialRef) } catch { /* 已不存在 */ }
+            await dropCredValue(entry.credentialRef)
             logger.info?.(`[codebuddy] 已删除账号 ${id}`)
             return json(200, { ok: true })
           }
@@ -1361,6 +1408,31 @@ function install(ctx, cfg, logger, modelBridge) {
     } catch { return null }
   }
 
+  /** install() 侧的凭据读取：本地库优先，再回落 DSH 服务。 */
+  const readCredValue = async (ref) => {
+    if (!ref) return null
+    const local = readLocalCredential(stateHome(), ref)
+    if (local !== null) return { value: local }
+    const svc = getCredSvc()
+    if (!svc) return null
+    try {
+      const resolved = await svc.resolve(ref)
+      return resolved && typeof resolved.value === 'string' ? resolved : null
+    } catch { return null }
+  }
+
+  /** install() 侧的凭据写入：本地库一定写，服务有就顺带写。 */
+  const writeCredValue = async (ref, value) => {
+    writeLocalCredential(stateHome(), ref, value)
+    try {
+      const svc = getCredSvc()
+      if (svc && typeof svc.set === 'function') await svc.set(ref, value)
+    } catch { /* 服务写失败不影响，本地已存住 */ }
+  }
+
+  /** install() 里的主目录。与 login 路由用同一套解析规则。 */
+  const stateHome = () => String(cfg.dshHome || '').trim() || dshHome()
+
   const state = {
     credential: null,
     credentialRef: '',
@@ -1436,13 +1508,8 @@ function install(ctx, cfg, logger, modelBridge) {
     const ref = readAccountRef()
     if (!ref) return null
     try {
-      // 惰性取 credits：apply() 那条 inject 只要求 llm 了（见那里的注释）。
-      const credSvc = getCredSvc()
-      if (!credSvc) {
-        logger.warn?.('[codebuddy] 当前组合没有 credentials 服务，无法读取凭据')
-        return null
-      }
-      const resolved = await credSvc.resolve(ref)
+      // 惰性取凭据：apply() 那条 inject 只要求 llm 了（见那里的注释）。
+      const resolved = await readCredValue(ref)
       if (!resolved || typeof resolved.value !== 'string') return null
       const cred = JSON.parse(resolved.value)
       return cred && typeof cred.access_token === 'string' ? cred : null
@@ -1473,8 +1540,8 @@ function install(ctx, cfg, logger, modelBridge) {
       refresh_token: data.refreshToken ? String(data.refreshToken) : credential.refresh_token,
       expires_at: String(data.expiresAt ?? Date.now() + expiresIn * 1000),
     }
-    // 写回凭据库，避免下次又拿旧 token
-    try { await getCredSvc()?.set(refreshTargetRef(), JSON.stringify(next)) } catch { /* 只读库时忽略 */ }
+    // 写回凭据，避免下次又拿旧 token。写本地库，服务有就顺带写。
+    try { await writeCredValue(refreshTargetRef(), JSON.stringify(next)) } catch { /* 只读库时忽略 */ }
     return next
   }
 
