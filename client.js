@@ -106,6 +106,8 @@ window.__ModuleLoader__.load({
         modelsFailed: '模型清单读取失败',
         modelEnable: '启用',
         modelDisable: '停用',
+        modelLegacy: '旧',
+        modelLegacyHint: '腾讯已从官方模型列表撤下，但接口仍可调用，所以保留在这里',
         modelsAllDisabled: '所有模型都已停用，模型选择器里将看不到这个分组；点「全部启用」可恢复。',
         modelsNote: '改动立即生效。模型选择器如果还显示旧列表，关掉重开一次即可。',
       },
@@ -191,6 +193,8 @@ window.__ModuleLoader__.load({
         modelsFailed: 'Could not load the model list',
         modelEnable: 'Enable',
         modelDisable: 'Disable',
+        modelLegacy: 'legacy',
+        modelLegacyHint: 'Tencent removed it from the official model list, but the API still accepts it, so it stays here',
         modelsAllDisabled: 'All models are disabled, so this group disappears from the picker. Use "Enable all" to restore.',
         modelsNote: 'Changes take effect immediately. If the picker still shows the old list, reopen it.',
       },
@@ -340,6 +344,7 @@ window.__ModuleLoader__.load({
 .cb_modrow.off{opacity:.55}
 .cb_modname{flex:1;min-width:0;font-size:12.5px;font-weight:540;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .cb_modrow.off .cb_modname{text-decoration:line-through;text-decoration-color:color-mix(in srgb,var(--dsw-alias-label-tertiary) 70%,transparent)}
+.cb_modlegacy{margin-left:5px;font-size:9.5px;font-weight:600;padding:1px 5px;border-radius:999px;vertical-align:1px;color:var(--dsw-alias-label-tertiary);border:1px solid var(--dsw-alias-border-l1);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 70%,transparent)}
 .cb_mini.muted{color:var(--dsw-alias-label-tertiary);border-color:color-mix(in srgb,var(--dsw-alias-border-l1) 90%,transparent)}
 `
 
@@ -780,7 +785,10 @@ window.__ModuleLoader__.load({
                 key: m.id,
                 className: 'cb_modrow' + (m.enabled ? '' : ' off'),
               },
-                h('span', { className: 'cb_modname', title: m.id }, m.name),
+                h('span', { className: 'cb_modname', title: m.id }, m.name,
+                  // 远端目录已撤、但接口仍认的模型：标出来，免得以为界面错乱
+                  m.legacy ? h('span', { className: 'cb_modlegacy', title: t('modelLegacyHint') },
+                    t('modelLegacy')) : null),
                 h('button', {
                   className: 'cb_mini' + (m.enabled ? '' : ' muted'),
                   disabled: modelsBusy,

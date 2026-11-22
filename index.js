@@ -1422,6 +1422,30 @@ function install(ctx, cfg, logger, modelBridge) {
   }
 
   /**
+   * 把「远端目录已不再列出、但接口仍然认」的模型补回来。
+   *
+   * 实测（2026-11-22）：腾讯把 `hy3` / `hy3-x` 从 /v3/config 的模型列表里撤了，
+   * 但直接对 `/v2/chat/completions` 发 `model: "hy3"` 仍然返回 **HTTP 200**，
+   * 说明模型没下线，只是不再出现在 IDE 的目录里。
+   *
+   * 早先插件完全以远端目录为准，于是这些「还能用但没列出来」的模型就凭空消失了
+   * ——用户看到的就是「我的 hy3 没了」。这里以内置兜底表补位：
+   *   · 远端有的，用远端（新；名字/上下文都是最新的）
+   *   · 远端没有、兜底表里有的，追加为 legacy（旧但还能调）
+   *
+   * 补进来的标 `legacy: true`，设置页会打个「旧」标签；用户不想要可以用
+   * 模型开关关掉——这也是为什么敢补：有开关兜底，误补不会变成麻烦。
+   */
+  function mergeLegacyModels(remote) {
+    if (!Array.isArray(remote) || remote.length === 0) return FALLBACK_MODELS
+    const have = new Set(remote.map((m) => String(m.id)))
+    const legacy = FALLBACK_MODELS
+      .filter((m) => !have.has(String(m.id)))
+      .map((m) => ({ ...m, legacy: true }))
+    return [...remote, ...legacy]
+  }
+
+  /**
    * 拉「完整目录」并缓存 10 分钟。
    *
    * 注意这里**不做启用/停用过滤**：过滤放在 listModels 里每次实时做。
@@ -1432,7 +1456,7 @@ function install(ctx, cfg, logger, modelBridge) {
     if (state.catalogue && now - state.catalogueAt < 10 * 60_000) return state.catalogue
     const credential = await ensureCredential()
     const remote = credential ? await fetchModels(credential).catch(() => null) : null
-    const source = disambiguateNames(remote && remote.length > 0 ? remote : FALLBACK_MODELS)
+    const source = disambiguateNames(mergeLegacyModels(remote))
     state.meta = new Map(source.map((m) => [m.id, m]))
     state.catalogue = source
     state.catalogueAt = now
@@ -2008,7 +2032,13 @@ function install(ctx, cfg, logger, modelBridge) {
       const catalogue = await ensureCatalogue()
       const prefs = readModelPrefs(accountHome())
       const { models } = applyModelPrefs(catalogue, prefs)
-      return models.map((m) => ({ id: m.id, name: m.name, enabled: m.enabled !== false }))
+      return models.map((m) => ({
+        id: m.id,
+        name: m.name,
+        enabled: m.enabled !== false,
+        // legacy = 远端目录没列出、但接口仍然认的模型（用兜底表补回来的）
+        legacy: m.legacy === true,
+      }))
     }
   }
 

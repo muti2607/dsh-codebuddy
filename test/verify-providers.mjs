@@ -160,13 +160,17 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
   const adapter = adapters.get('codebuddy')
   const models = await adapter.listModels('codebuddy')
   const byId = new Map(models.map((m) => [m.id, m]))
-  check('模型数量 5', models.length === 5, String(models.length))
+  // 远端 5 条 + 兜底表里远端没有的那些（legacy）
+  const remoteIds = REMOTE_MODELS.map((r) => r.id)
+  check('远端模型全都在列表里', remoteIds.every((id) => byId.has(id)), remoteIds.join(','))
+  check('列表不少于远端条数', models.length >= REMOTE_MODELS.length, String(models.length))
   check('hy4flash 保持原名', byId.get('hy4flash')?.name === 'Hy4 flash', byId.get('hy4flash')?.name)
   check('hy4flash-free 加了 (free)', byId.get('hy4flash-free')?.name === 'Hy4 flash (free)',
     byId.get('hy4flash-free')?.name)
   const names = models.map((m) => m.name)
   check('所有模型名两两不同', new Set(names).size === names.length, names.join(' | '))
-  check('id 全部保留原值（没被改名）', models.every((m) => REMOTE_MODELS.some((r) => r.id === m.id)),
+  check('远端 id 全部保留原值（没被改名）',
+    models.filter((m) => remoteIds.includes(m.id)).length === REMOTE_MODELS.length,
     models.map((m) => m.id).join(','))
 }
 
@@ -196,7 +200,9 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
     ],
   })
   const models = await adapters.get('codebuddy').listModels('codebuddy')
-  const names = models.map((m) => m.name)
+  // 只看这三条（legacy 补位会把兜底表里其余的也带进来）
+  const xs = models.filter((m) => ['x-main', 'x-free', 'x-other'].includes(m.id))
+  const names = xs.map((m) => m.name)
   check('三同名：第一个保持 X', names[0] === 'X', names[0])
   check('三同名：第二个 X (free)', names[1] === 'X (free)', names[1])
   check('三同名：第三个回落 id', names[2] === 'X (x-other)', names[2])
@@ -223,7 +229,7 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
   const adapter = adapters.get('codebuddy')
 
   const before = await adapter.listModels('codebuddy')
-  check('初始全部模型可见', before.length === REMOTE_MODELS.length, String(before.length))
+  check('初始全部模型可见', before.length >= REMOTE_MODELS.length, String(before.length))
 
   writeModelPrefs(home, { disabled: ['hy4flash-free'] })
   const after = await adapter.listModels('codebuddy')
@@ -242,8 +248,8 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
   const restored = await adapter.listModels('codebuddy')
   check('重新启用后立刻回来', restored.length === before.length, String(restored.length))
 
-  // 全部停用 → 空清单（界面据此提示）
-  writeModelPrefs(home, { disabled: REMOTE_MODELS.map((m) => m.id) })
+  // 全部停用（含补进来的 legacy）→ 空清单（界面据此提示）
+  writeModelPrefs(home, { disabled: before.map((m) => m.id) })
   const none = await adapter.listModels('codebuddy')
   check('全部停用时列表为空', none.length === 0, String(none.length))
 }
@@ -253,7 +259,7 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
   const { adapters, home } = boot()
   fs.writeFileSync(path.join(home, 'dsh-codebuddy', 'models.json'), '{ broken', 'utf8')
   const models = await adapters.get('codebuddy').listModels('codebuddy')
-  check('偏好损坏时仍返回完整列表', models.length === REMOTE_MODELS.length, String(models.length))
+  check('偏好损坏时仍返回完整列表', models.length >= REMOTE_MODELS.length, String(models.length))
   check('损坏的偏好被读成空', readModelPrefs(home).disabled.length === 0)
 }
 
@@ -262,10 +268,14 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
   const { call, home } = boot()
 
   const list = await call('/api/cb/models')
+  // 注意：目录里会额外补上「远端已撤但接口仍认」的模型（见用例 12/13），
+  // 所以这里以接口返回的 total 为准，不硬编码条数。
+  const total = list.body.total
   check('GET /models 返回 200', list.status === 200, list.status)
   check('GET /models ok=true', list.body.ok === true)
-  check('GET /models 总数正确', list.body.total === REMOTE_MODELS.length, list.body.total)
-  check('GET /models 初始全启用', list.body.enabledCount === REMOTE_MODELS.length, list.body.enabledCount)
+  check('GET /models total 与列表一致', total === (list.body.models || []).length, total)
+  check('GET /models 至少包含远端那几条', total >= REMOTE_MODELS.length, total)
+  check('GET /models 初始全启用', list.body.enabledCount === total, list.body.enabledCount)
   check('GET /models 带每项 enabled', (list.body.models || []).every((m) => typeof m.enabled === 'boolean'))
   check('GET /models 带名字', (list.body.models || []).every((m) => typeof m.name === 'string' && m.name.length > 0))
   check('初始 allDisabled=false', list.body.allDisabled === false)
@@ -277,7 +287,7 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
     JSON.stringify(readModelPrefs(home).disabled))
 
   const after = await call('/api/cb/models')
-  check('停用后计数减一', after.body.enabledCount === REMOTE_MODELS.length - 1, after.body.enabledCount)
+  check('停用后计数减一', after.body.enabledCount === total - 1, after.body.enabledCount)
   const target = (after.body.models || []).find((m) => m.id === 'hy4flash-free')
   check('停用项标记为 false', target && target.enabled === false, JSON.stringify(target))
 
@@ -286,7 +296,10 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
   check('启用后偏好清空该 id', !readModelPrefs(home).disabled.includes('hy4flash-free'))
 
   // 全部停用 → allDisabled 标记（界面据此给提示）
-  for (const m of REMOTE_MODELS) await call('/api/cb/models', 'POST', { modelId: m.id, enabled: false })
+  // 必须遍历接口返回的全部模型，否则补进来的 legacy 模型仍启用，allDisabled 永远为 false
+  for (const m of (list.body.models || [])) {
+    await call('/api/cb/models', 'POST', { modelId: m.id, enabled: false })
+  }
   const none = await call('/api/cb/models')
   check('全部停用时 allDisabled=true', none.body.allDisabled === true, none.body.enabledCount)
   check('全部停用时 enabledCount=0', none.body.enabledCount === 0)
@@ -294,7 +307,7 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
   const all = await call('/api/cb/models', 'POST', { action: 'enableAll' })
   check('enableAll 返回 ok', all.body.ok === true)
   const restored = await call('/api/cb/models')
-  check('enableAll 后全部恢复', restored.body.enabledCount === REMOTE_MODELS.length, restored.body.enabledCount)
+  check('enableAll 后全部恢复', restored.body.enabledCount === total, restored.body.enabledCount)
 
   const badReq = await call('/api/cb/models', 'POST', {})
   check('缺 modelId 时 ok=false', badReq.body.ok === false, JSON.stringify(badReq.body))
@@ -304,6 +317,42 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
 
   const unknown = await call('/api/cb/whatever')
   check('未知路径仍是 404', unknown.status === 404, unknown.status)
+}
+
+// 12) 远端目录撤掉的模型（hy3 / hy3-x）必须用兜底表补回来
+//
+// 实测（2026-11-22）：腾讯把 hy3 从 /v3/config 撤了，但 chat 接口仍返回 200。
+// 早先插件完全照抄远端目录，于是这些模型凭空消失——用户看到就是「hy3 没了」。
+{
+  // REMOTE_MODELS 里本来就没有 hy3/hy3-x，正好复现「目录已撤」
+  const { adapters, call } = boot()
+  const models = await adapters.get('codebuddy').listModels('codebuddy')
+  const ids = models.map((m) => m.id)
+  check('补回了 hy3', ids.includes('hy3'), ids.join(','))
+  check('补回了 hy3-x', ids.includes('hy3-x'))
+  check('补回的模型排在远端之后', ids.indexOf('hy3') > ids.indexOf('deepseek-v4.1-flash'), ids.join(','))
+  check('远端原有的仍在最前', ids[0] === 'auto', ids[0])
+  const named = models.find((m) => m.id === 'hy3')
+  check('补回的模型带名字', named && named.name !== 'hy3', named && named.name)
+
+  const detail = await call('/api/cb/models')
+  const hy3 = (detail.body.models || []).find((m) => m.id === 'hy3')
+  check('接口把 hy3 标成 legacy', hy3 && hy3.legacy === true, JSON.stringify(hy3))
+  check('补回的模型默认启用', hy3 && hy3.enabled === true)
+  const auto = (detail.body.models || []).find((m) => m.id === 'auto')
+  check('远端原模型不带 legacy', auto && auto.legacy === false, JSON.stringify(auto))
+
+  await call('/api/cb/models', 'POST', { modelId: 'hy3', enabled: false })
+  const after = await adapters.get('codebuddy').listModels('codebuddy')
+  check('补回的模型可以被停用', !after.some((m) => m.id === 'hy3'))
+}
+
+// 13) 远端完全拿不到时，仍用完整兜底表（含 hy3）
+{
+  const { adapters } = boot()
+  globalThis.fetch = async () => ({ ok: false, status: 401, text: async () => '{}' })
+  const models = await adapters.get('codebuddy').listModels('codebuddy')
+  check('无远端时含 hy3', models.some((m) => m.id === 'hy3'), String(models.length))
 }
 
 for (const dir of homes) {
