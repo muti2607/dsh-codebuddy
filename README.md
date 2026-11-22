@@ -259,6 +259,33 @@ MIT
 
 ## 更新日志
 
+### 1.5.4
+
+1.5.3 之后，别人的机器上仍然报「模型清单读取失败」。查下来不是速度问题，
+是**依赖把无关功能一起拖死**：
+
+- **真因**：`/api/cb` 整组路由（含 `/models`）注册在
+  `root.inject(['webServer','credentials'], …)` 的回调里。Cordis 的语义是
+  **缺任一 required 依赖就不执行回调**，于是只要组合里没有 `credentials`
+  服务（精简组合、凭据服务未就绪、装载顺序），整组 `/api/cb` 路由根本不会
+  注册。而 `/api/codebuddy`（版本、更新）只依赖 `webServer`，照常可用——
+  所以症状是「设置区能打开、版本号也对，只有模型清单固定失败」，很容易
+  被误判成取数或网络问题。
+- 同样的焊点在第二层：模型清单的取数桥 `modelBridge.list` 是在 `install()`
+  里赋值的，而 `install()` 挂在 `inject(['credentials','attachments','llm'], …)`
+  上。缺 `credentials` 时它也不执行，路由即使注册了，`/models` 只会回
+  「模型服务尚未就绪」。
+- **修法：把凭据降级为可选依赖**。两个 inject 分别收窄成 `['webServer']` 和
+  `['llm']`，凭据改为需要时现取（`getCredentials()` / `getCredSvc()`）；
+  缺凭据时读凭据返回 null、写回静默跳过，而不是让整个渠道或整组路由消失。
+  列模型本来就不需要凭据，不该被凭据的有无决定。
+- **回归闸门**：`test/verify-login.mjs` 新增第 8 组——用一个
+  **故意不提供 credentials** 的假 ctx（并模拟「缺依赖就不执行回调」的真实
+  注入语义），断言 `/api/cb` 仍然注册、`/api/cb/models` 仍返回非空清单。
+  这条测试在修好前是红的，能防止以后有人把 `credentials` 加回 required。
+- 顺带把 `check-alias` 与 `verify-credits-route` 并入 `npm test`，之前它们
+  只在手动循环里跑。
+
 ### 1.5.3
 
 1.5.2 只解决了「同一次运行里第二次打开」，换台电脑或重启 DSH 后依然是冷的。

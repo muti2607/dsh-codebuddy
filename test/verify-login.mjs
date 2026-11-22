@@ -232,4 +232,56 @@ const jsonResponse = (obj, status = 200) =>
   }
 }
 
+// ---- 8. 没有 credentials 服务时，/api/cb 路由仍须注册（回归闸门）----
+//
+// 曾经的写法是 root.inject(['webServer','credentials'], …)。只要组合里没有
+// credentials 服务（精简组合、凭据服务未就绪、装载顺序），那个回调就不执行，
+// 于是整组 /api/cb 路由一起失踪——连**完全不需要凭据**的 /models 也没了。
+// 症状极像别的问题：设置区能打开、版本号正常（走 /api/codebuddy），
+// 但模型清单固定报错。这条测试把这个耦合钉死。
+{
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-nocred-'))
+  const prevHome = process.env.DSH_HOME
+  process.env.DSH_HOME = home
+  const routes = []
+  let route = null
+  const fake = {
+    logger: { info: () => {}, warn: () => {} },
+    llm: { registerAdapter() { return { dispose() {} } }, registerConfigurableProviders() {} },
+    // 关键：**故意不提供 credentials**
+    attachments: { async readImageRequest() { throw new Error('no image') } },
+    webServer: { register(r) { routes.push(r); if (r.path === '/api/cb') route = r; return () => {} } },
+    inject(deps, cb) {
+      // 模拟真实注入语义：缺任一 required 依赖就**不执行**回调。
+      const missing = deps.filter((d) => !(d in fake))
+      if (missing.length === 0) cb(fake)
+      return () => {}
+    },
+  }
+  try {
+    apply(fake, { dshHome: home, autoOpenBrowser: false })
+    if (!route) fail('/api/cb 在缺少 credentials 时未注册（路由被凭据依赖拖死）: ' + routes.map((r) => r.path).join(','))
+    if (!routes.some((r) => r.path === '/api/codebuddy')) fail('更新路由应在（只依赖 webServer）')
+    // /models 不碰凭据，缺 credentials 也必须能应答
+    if (route) {
+      const res = {
+        statusCode: 0,
+        headers: {},
+        body: '',
+        writeHead(code, h) { this.statusCode = code; Object.assign(this.headers, h || {}); return this },
+        end(chunk) { this.body = String(chunk || '') },
+      }
+      await route.handler({ url: '/api/cb/models', method: 'GET', headers: {} }, res)
+      let body = null
+      try { body = JSON.parse(res.body) } catch { /* 非 JSON */ }
+      if (!body || body.ok !== true) fail('/models 在缺 credentials 时应成功: ' + res.statusCode + ' ' + res.body.slice(0, 160))
+      if (!Array.isArray(body.models) || body.models.length === 0) fail('/models 应返回非空清单')
+    }
+  } finally {
+    if (prevHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = prevHome
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+}
+
 console.log(JSON.stringify({ ok: !process.exitCode }, null, 2))

@@ -600,10 +600,16 @@ export function apply(root, config = {}) {
   // 但 web 路由必须在 apply() 这层注册（同一前缀只能注册一次）。用一个显式
   // 的小桥把「列模型」从 install() 递给路由，避免共享可变全局或重复实现取数。
   const modelBridgeForInstall = { list: null }
-  // Cordis 规定服务只能在 inject 作用域里取：直接读 root.llm / root.credentials
-  // 会抛 "cannot get property ... without inject"，插件整条 entry 都装不上。
-  // 依赖缺失时（比如组合里没有 llm）回调挂起而不会失败，正是需要的行为。
-  root.inject(['credentials', 'attachments', 'llm'], (scoped) => {
+  // Cordis 规定服务只能在 inject 作用域里取：直接读 root.llm 会抛
+  // "cannot get property ... without inject"，插件整条 entry 都装不上。
+  //
+  // 这里**只要求 llm**。credentials / attachments 都改成在 install() 内惰性取：
+  // 以前写的是 inject(['credentials','attachments','llm'], …)，只要组合里缺任一
+  // 个，install() 就不执行——而模型清单的取数桥 (modelBridge.list) 正是在
+  // install() 里赋的，于是 `/api/cb/models` 会固定失败。列模型根本不需要凭据，
+  // 让凭据服务的有无决定模型清单能不能看，是把两件无关的事焊在一起。
+  // 缺 llm 时回调挂起、不注册渠道，这才是真正该有的依赖。
+  root.inject(['llm'], (scoped) => {
     teardown = install(scoped, cfg, logger, modelBridgeForInstall)
   })
   // 更新检查本身不需要模型服务，单独一条 inject：组合里没有 llm 时
@@ -612,10 +618,16 @@ export function apply(root, config = {}) {
   root.inject(['webServer'], (scoped) => {
     updateTeardown = installUpdateRoutes(scoped, root, cfg, logger)
   })
-  // 登录路由：要写凭据库，所以和 webServer 一起注入 credentials。
-  // 与模型通道共用同一份账号池文件，登录完下一次请求就能用上，无需重启。
+  // 登录路由：只要 webServer。凭据服务**可选**——它在回调里按需解析。
+  //
+  // 以前这里写的是 inject(['webServer', 'credentials'])，代价是：一旦组合里没有
+  // credentials 服务（精简组合、凭据服务未就绪、装载顺序问题），这个回调根本不执行，
+  // 于是整组 `/api/cb` 路由（含**完全不需要凭据**的 `/models`）统统不会注册。
+  // 表现就是设置区能打开、版本号也正常（那条走 /api/codebuddy，只依赖 webServer），
+  // 但模型清单固定失败——一个凭据依赖把无关功能一起拖死，没有道理。
+  // 现在只注入 webServer，凭据在真正需要时再用 getCredentials() 判断。
   let loginTeardown = () => {}
-  root.inject(['webServer', 'credentials'], (scoped) => {
+  root.inject(['webServer'], (scoped) => {
     loginTeardown = installLoginRoutes(scoped, cfg, logger, modelBridgeForInstall)
   })
   return () => {
@@ -869,7 +881,20 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
     try { setTimeout(() => { Promise.resolve().then(() => ensureCatalogue()).catch(() => {}); }, 0); } catch {}
 
   const server = ctx.webServer
-  const credentials = ctx.credentials
+  /**
+   * 凭据服务惰性获取。
+   *
+   * apply() 那条 inject 现在只要求 webServer（见那里的注释：以前连带 required
+   * credentials，导致整组 /api/cb 路由一起失踪）。因此这里不能再在闭包里
+   * 冻结 `ctx.credentials`——那样只会拿到 undefined，所有涉凭据功能都会误报
+   * 「没有 credentials 服务」。改成每次现取，服务后到也能用上。
+   */
+  const getCredentials = () => {
+    try {
+      const c = ctx.credentials || ctx.get?.('credentials')
+      return c && typeof c.resolve === 'function' ? c : null
+    } catch { return null }
+  }
   if (!server || typeof server.register !== 'function') return () => {}
 
   const home = () => String(cfg.dshHome || '').trim() || dshHome()
@@ -890,10 +915,11 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
         try {
           const list = readAccounts(home()).filter((a) => a.enabled !== false)
           if (list.length === 0) return
-          if (!credentials || typeof credentials.resolve !== 'function') return
+          const preCred = getCredentials()
+          if (!preCred) return
           await Promise.all(list.map(async (account) => {
             try {
-              const resolved = await credentials.resolve(account.credentialRef)
+              const resolved = await preCred.resolve(account.credentialRef)
               if (!resolved || typeof resolved.value !== 'string') return
               const parsed = JSON.parse(resolved.value)
               if (!parsed || typeof parsed.access_token !== 'string') return
@@ -937,10 +963,11 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
     rec.controller = new AbortController()
     rec.promise = completeBuddyLogin(rec.state, { product: rec.product, signal: rec.controller.signal })
       .then(async (done) => {
-        if (!credentials || typeof credentials.set !== 'function') {
+        const saveCred = getCredentials()
+        if (!saveCred || typeof saveCred.set !== 'function') {
           throw new Error('当前组合没有 credentials 服务，无法保存凭据')
         }
-        await credentials.set(rec.credentialRef, done.credentialJson)
+        await saveCred.set(rec.credentialRef, done.credentialJson)
         addAccount(home(), {
           id: rec.accountId,
           provider: rec.provider.id,
@@ -1090,8 +1117,9 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
           }
           const resolveCredential = async (account) => {
             try {
-              if (!credentials || typeof credentials.resolve !== 'function') return null
-              const resolved = await credentials.resolve(account.credentialRef)
+              const cred = getCredentials()
+              if (!cred) return null
+              const resolved = await cred.resolve(account.credentialRef)
               if (!resolved || typeof resolved.value !== 'string') return null
               const parsed = JSON.parse(resolved.value)
               return parsed && typeof parsed.access_token === 'string' ? parsed : null
@@ -1186,7 +1214,7 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
             // 凭据只报「存不存在」，绝不回传内容
             hasCredential: (() => {
               try {
-                return !!(credentials && typeof credentials.resolve === 'function' && a.credentialRef)
+                return !!(getCredentials() && a.credentialRef)
               } catch { return false }
             })(),
           }))
@@ -1203,7 +1231,7 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
           if (!entry) return json(200, { ok: false, error: '账号不存在' })
           if (action === 'delete') {
             removeAccount(home(), id)
-            try { if (credentials?.unset) await credentials.unset(entry.credentialRef) } catch { /* 已不存在 */ }
+            try { const c = getCredentials(); if (c?.unset) await c.unset(entry.credentialRef) } catch { /* 已不存在 */ }
             logger.info?.(`[codebuddy] 已删除账号 ${id}`)
             return json(200, { ok: true })
           }
@@ -1265,6 +1293,22 @@ function install(ctx, cfg, logger, modelBridge) {
   const promptCacheKey = (globalThis.crypto?.randomUUID?.() || String(Date.now())).replace(/-/g, '')
   // 插件自己的账号池目录（不依赖 OFM）
   const accountHome = () => String(cfg.dshHome || '').trim() || dshHome()
+
+  /**
+   * 凭据服务惰性获取。
+   *
+   * apply() 那条 inject 现在只要求 llm（以前连带 required credentials，
+   * 一旦组合里没有凭据服务，install() 整个不执行，连 models 路由的取数桥
+   * 都拿不到，模型清单就会固定报错）。因此这里不能冻结 ctx.credentials，
+   * 需要时现取；没有凭据服务时，读凭据返回 null、写回静默跳过，
+   * 而不是让整个渠道装不上。
+   */
+  const getCredSvc = () => {
+    try {
+      const c = ctx.credentials || ctx.get?.('credentials')
+      return c && typeof c.resolve === 'function' ? c : null
+    } catch { return null }
+  }
 
   const state = {
     credential: null,
@@ -1341,7 +1385,13 @@ function install(ctx, cfg, logger, modelBridge) {
     const ref = readAccountRef()
     if (!ref) return null
     try {
-      const resolved = await ctx.credentials.resolve(ref)
+      // 惰性取 credits：apply() 那条 inject 只要求 llm 了（见那里的注释）。
+      const credSvc = getCredSvc()
+      if (!credSvc) {
+        logger.warn?.('[codebuddy] 当前组合没有 credentials 服务，无法读取凭据')
+        return null
+      }
+      const resolved = await credSvc.resolve(ref)
       if (!resolved || typeof resolved.value !== 'string') return null
       const cred = JSON.parse(resolved.value)
       return cred && typeof cred.access_token === 'string' ? cred : null
@@ -1373,7 +1423,7 @@ function install(ctx, cfg, logger, modelBridge) {
       expires_at: String(data.expiresAt ?? Date.now() + expiresIn * 1000),
     }
     // 写回凭据库，避免下次又拿旧 token
-    try { await ctx.credentials.set(refreshTargetRef(), JSON.stringify(next)) } catch { /* 只读库时忽略 */ }
+    try { await getCredSvc()?.set(refreshTargetRef(), JSON.stringify(next)) } catch { /* 只读库时忽略 */ }
     return next
   }
 
