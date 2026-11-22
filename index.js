@@ -54,6 +54,7 @@ import {
   newCredentialRef,
   newAccountId,
 } from './src/account-store.js'
+import { readSnapshot, writeSnapshot, dropSnapshot } from './src/snapshot-cache.js'
 
 const PROVIDER = 'codebuddy'
 const DISPLAY_NAME = 'CodeBuddy (腾讯免费)'
@@ -1064,6 +1065,8 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
           }
 
           if (url.pathname === '/api/cb/credits' && request.method === 'GET') {
+            // ?fresh=1 强制重查（界面上的「刷新」按钮），忽略磁盘快照。
+            const wantFresh = String(url.searchParams.get('fresh') || '') === '1'
             const rows = await Promise.all(targets.map(async (account) => {
               const product = PRODUCTS[account.provider] || PRODUCTS.buddy
               const credential = await resolveCredential(account)
@@ -1075,8 +1078,27 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
               if (!credential) {
                 return { ...base, ok: false, error: '凭据不可用，请重新登录该账号' }
               }
+              const snapName = `credits-${account.id}`
+              // 冷启动第一屏：先用上次落盘的结果渲染，后台再刷新。
+              //
+              // 这是「换台电脑就特别慢」的真正原因——内存缓存救不了新进程，
+              // 上游 billing 却要 2.6s、被墙时是干等满 4s 超时。快照按账号
+              // 隔离（文件名带 accountId），绝不能把 A 的余额显示给 B。
+              if (!wantFresh) {
+                const snap = readSnapshot(home(), snapName, 7 * 24 * 3600_000)
+                if (snap) {
+                  void (async () => {
+                    try {
+                      const overview = await fetchCreditOverview(product, credential)
+                      if (overview && overview.ok) writeSnapshot(home(), snapName, overview)
+                    } catch { /* 后台刷新失败就继续用旧值 */ }
+                  })()
+                  return { ...base, ok: true, ...snap.value, stale: true, fetchedAt: snap.at }
+                }
+              }
               try {
                 const overview = await fetchCreditOverview(product, credential)
+                if (overview && overview.ok) writeSnapshot(home(), snapName, overview)
                 return { ...base, ok: true, ...overview }
               } catch (error) {
                 return { ...base, ok: false, error: String((error && error.message) || error) }
@@ -1493,6 +1515,10 @@ function install(ctx, cfg, logger, modelBridge) {
     state.meta = new Map(source.map((m) => [m.id, m]))
     state.catalogue = source
     state.catalogueAt = now
+    // 记住这份目录的来源：只有「真从远端拿到」的才值得落盘。
+    // 兜底表（aliveFallback）是应急清单，把它写进快照会让一次网络故障
+    // 变成长期「事实」——用户下次正常联网时看到的还是那份旧的应急列表。
+    state.catalogueSource = Array.isArray(remote) && remote.length > 0 ? 'remote' : 'fallback'
     return state.catalogue
   }
   /* 目录缓存：stale-while-revalidate + 共享 in-flight + 冷启动限时。
@@ -1520,11 +1546,38 @@ function install(ctx, cfg, logger, modelBridge) {
     }
     const now = Date.now();
     if (entry.value !== null && now - entry.at < 600000) return entry.value;
+
+    // 进程内没有可用值时才去看磁盘快照。
+    //
+    // 这一步专治「换台电脑 / 重启 DSH 后第一次打开特别慢」：内存缓存对
+    // 新进程等于不存在，而远端目录在被墙或无网时是干等满超时。落盘的上一次
+    // 目录能让第一屏立刻渲染出正确的模型列表（含图标与名字），随后后台刷新。
+    // 只在「没有内存值」时读盘，热路径不会多一次文件 IO。
+    if (entry.value === null) {
+      const snap = readSnapshot(accountHome(), 'catalogue', 30 * 24 * 3600_000)
+      if (snap && Array.isArray(snap.value) && snap.value.length > 0) {
+        entry.value = snap.value;
+        entry.at = snap.at;
+        // 目录里可能含已下线的模型，落盘值同样要过一遍退役过滤
+        state.catalogue = snap.value;
+        state.catalogueAt = snap.at;
+        state.meta = new Map(snap.value.map((m) => [m.id, m]));
+      }
+    }
+
     const stale = entry.value !== null;
     if (!entry.inflight) {
       entry.inflight = Promise.resolve()
         .then(() => ensureCatalogueBlocking(...args))
-        .then((value) => { entry.value = value; entry.at = Date.now(); return value; })
+        .then((value) => {
+          entry.value = value; entry.at = Date.now();
+          // 只缓存「真从远端拿到」的目录：兜底表不是远端事实，落盘会让
+          // 某次网络故障时的应急清单长期冒充真相。
+          try {
+            if (state.catalogueSource === 'remote') writeSnapshot(accountHome(), 'catalogue', value);
+          } catch {}
+          return value;
+        })
         .catch((error) => { if (entry.value !== null) return entry.value; throw error; })
         .finally(() => { entry.inflight = null; });
     }

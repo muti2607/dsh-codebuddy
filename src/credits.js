@@ -285,13 +285,29 @@ const __CREDIT_TTL_MS = 30000;
 const __creditCache = new Map();
 const __creditInflight = new Map();
 
+/**
+ * 进程内缓存的 key。
+ *
+ * 只取「产品 + access_token 指纹」，**绝不把整份凭据或 signal 序列化进 key**：
+ *   · 以前 key 里带 signal，每次调用 signal 都是新对象，key 永不命中，
+ *     缓存形同不存在（这是「积分每次都慢」的一个真实原因）；
+ *   · 凭据里有 refresh_token，写进 key 就等于让它出现在错误日志里。
+ */
+function __creditKey(product, credential) {
+  const endpoint = String(product && product.endpoint || '');
+  const code = String(product && product.productCode || '');
+  const token = String(credential && credential.access_token || '');
+  // 只用 token 的前 12 位做区分：够区分账号，又不至于把凭据留在内存键里
+  return `${code}|${endpoint}|${token.slice(0, 12)}`;
+}
+
 export function invalidateCreditCache() {
   __creditCache.clear();
   __creditInflight.clear();
 }
 
 export async function fetchCreditOverview(product, credential, signal) {
-  const key = JSON.stringify([product, credential, signal]);
+  const key = __creditKey(product, credential);
   const hit = __creditCache.get(key);
   if (hit && Date.now() - hit.at < __CREDIT_TTL_MS) return hit.value;
 

@@ -94,6 +94,9 @@ window.__ModuleLoader__.load({
         streak: '连签 {n} 天',
         dailyCredit: '每日 {n}',
         creditsExpiredHint: '另有 {n} 积分已过期',
+        // 冷启动先显示上次落盘结果，必须说清楚，否则会被当成「没刷新」的 bug
+        creditsCached: '缓存于 {t}，正在后台更新',
+        creditsRefreshing: '显示上次结果，正在更新…',
         creditsPackages: '{n} 个有效权益包',
         creditsPerAccount: '各账号余额',
         creditsNoAccount: '登录账号后即可查看积分',
@@ -181,6 +184,8 @@ window.__ModuleLoader__.load({
         streak: '{n}-day streak',
         dailyCredit: '{n} per day',
         creditsExpiredHint: '{n} credits already expired',
+        creditsCached: 'Cached {t}, updating in background',
+        creditsRefreshing: 'Showing last result, updating…',
         creditsPackages: '{n} active packages',
         creditsPerAccount: 'Balance per account',
         creditsNoAccount: 'Sign in an account to see credits',
@@ -324,6 +329,7 @@ window.__ModuleLoader__.load({
 .cb_creditstatus{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;font-size:11.5px;color:var(--dsw-alias-label-secondary)}
 .cb_creditsep{color:var(--dsw-alias-label-tertiary)}
 .cb_credit_err{color:var(--dsw-alias-state-error-primary)}
+.cb_cachedhint{color:var(--dsw-alias-label-tertiary);font-size:11px;font-variant-numeric:tabular-nums}
 .cb_creditreason{font-size:11px;color:var(--dsw-alias-label-tertiary);text-align:right;line-height:1.45;max-width:34ch}
 .cb_tag.muted{color:var(--dsw-alias-label-tertiary);border-style:dashed;background:transparent}
 .cb_creditactions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -375,11 +381,16 @@ window.__ModuleLoader__.load({
         else setError(String((data && data.error) || 'bad-response'))
       }).catch((e) => setError(String(e.message || e)))
 
-      /** 拉积分：余额少、单次两个请求，直接查，不做缓存。 */
-      const loadCredits = (quiet) => {
+      /**
+       * 拉积分：余额少、单次两个请求，直接查，不做缓存。
+       *
+       * `fresh` 用于手动刷新：Host 侧有落盘快照，默认会先回旧值再后台更新；
+       * 用户主动点刷新时不该再看到旧值，所以带上 fresh=1 强制重查。
+       */
+      const loadCredits = (quiet, fresh) => {
         if (!quiet) setCreditsBusy(true)
         setCreditsErr('')
-        return api('/credits', { timeout: 30000 })
+        return api('/credits' + (fresh ? '?fresh=1' : ''), { timeout: 30000 })
           .then((data) => {
             if (data && data.ok) setCredits(data)
             else setCreditsErr(String((data && data.error) || 'bad-response'))
@@ -542,6 +553,13 @@ window.__ModuleLoader__.load({
       // ── 积分派生值 ──
       const creditRows = (credits && credits.accounts) || []
       const creditTotal = credits && Number.isFinite(credits.total) ? credits.total : 0
+      // 冷启动时 Host 会先回上次落盘的结果（stale: true）并在后台刷新。
+      // 必须让用户看出「这行数据来自缓存」，否则「余额还是昨天的」会被当成 bug。
+      const cachedRows = creditRows.filter((r) => r && r.stale).length
+      const cachedAt = creditRows.reduce((min, r) => {
+        if (!r || !r.stale || !r.fetchedAt) return min
+        return min === 0 ? r.fetchedAt : Math.min(min, r.fetchedAt)
+      }, 0)
       const expiredTotal = creditRows.reduce((sum, r) => (
         sum + (r.balance && Number.isFinite(r.balance.expiredTotal) ? r.balance.expiredTotal : 0)
       ), 0)
@@ -651,6 +669,14 @@ window.__ModuleLoader__.load({
                   : null,
                 expiredTotal > 0
                   ? h('span', null, t('creditsExpiredHint').replace('{n}', fmtCredit(expiredTotal)))
+                  : null,
+                // 冷启动时先显示上次落盘的结果（后台正在刷新）。不说清楚的话，
+                // 「余额怎么是昨天的」会变成一个 Bug 报告 —— 其实数据是对的。
+                cachedRows > 0
+                  ? h('span', { className: 'cb_cachedhint' },
+                    creditsBusy
+                      ? t('creditsRefreshing')
+                      : t('creditsCached').replace('{t}', fmtTime(cachedAt)))
                   : null)),
 
             // ── 右：签到状态 / 本周进度 / 操作 ──
@@ -681,7 +707,7 @@ window.__ModuleLoader__.load({
                 h('button', {
                   className: 'cb_btn',
                   disabled: claiming || creditsBusy,
-                  onClick: () => loadCredits(),
+                  onClick: () => loadCredits(false, true),
                 }, creditsBusy ? t('creditsLoading') : t('creditsRefresh'))),
               // 不能领取时把原因写出来：「都领完了」和「这个账号没有签到活动」
               // 是两件事，只把按钮置灰会让人以为功能坏了。
