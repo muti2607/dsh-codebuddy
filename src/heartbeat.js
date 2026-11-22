@@ -87,6 +87,16 @@ export function planSend({ state, installId, now = Date.now() }) {
   if (!installId) return { send: false, reason: 'no-install-id' }
   const today = new Date(now).toISOString().slice(0, 10)
   const prev = state && typeof state === 'object' ? state : {}
+
+  // 失败退避：端点挂了（作者关机器、服务器搬迁、被墙）时不要每次启动都重试。
+  // 30 分钟起步，逐次翻倍，封顶 24 小时。这样即使对方天天重启，
+  // 也最多每天试一次，不会刷日志、不会反复超时。
+  if (prev.failAt) {
+    const fails = Math.max(1, Number(prev.failCount) || 1)
+    const wait = Math.min(24 * 3_600_000, 1_800_000 * Math.pow(2, Math.min(fails - 1, 6)))
+    if (now - Number(prev.failAt) < wait) return { send: false, reason: 'backoff' }
+  }
+
   if (prev.day === today) return { send: false, reason: 'already-reported-today' }
   // 从来没上报过 → install；之后都是 daily
   const event = prev.firstAt ? 'daily' : 'install'
@@ -173,9 +183,20 @@ export function scheduleHeartbeat({ cfg, logger, home, version, sourceKind, plat
           lastAt: Date.now(),
           count: (Number(state.count) || 0) + 1,
           version,
+          // 成功即清零失败计数
+          failAt: 0,
+          failCount: 0,
         })
       } else if (!result.skipped) {
-        logger?.warn?.(`[codebuddy] 心跳上报失败（不影响使用）：${result.error || result.status}`)
+        const failCount = (Number(state.failCount) || 0) + 1
+        // 记下失败时刻，供 planSend 做退避
+        writeState(home, { ...state, failAt: Date.now(), failCount })
+        // 只在**当天第一次**失败时说话。作者关机器、服务器搬迁都可能让端点长时间不可达，
+        // 那不是用户的问题，不该让人每次启动都看见一条红字。
+        if (!state.failAt || String(state.failDay || '') !== payload.day) {
+          logger?.warn?.(`[codebuddy] 心跳上报失败（不影响使用，将自动重试）：${result.error || result.status}`)
+        }
+        writeState(home, { ...readState(home), failDay: payload.day })
       }
     } catch (error) {
       logger?.warn?.(`[codebuddy] 心跳任务异常（不影响使用）：${String(error && error.message || error)}`)

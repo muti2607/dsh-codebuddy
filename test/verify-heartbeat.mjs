@@ -210,4 +210,71 @@ const ok = (m) => console.log('  ok ' + m)
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 }
 
+// ---- 11. 端点不可达（= 作者关机器）不得影响功能，且要退避 ----
+{
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb5-'))
+  try {
+    const logs = []
+    const logger = { warn: (m) => logs.push(String(m)) }
+
+    // 前提：昨天成功上报过，说明是"老用户"，今天端点挂了
+    const y = new Date(Date.now() - 86400000).toISOString().slice(0, 10)
+    writeState(home, { day: y, firstAt: Date.now() - 172800000, lastAt: Date.now() - 86400000, count: 5, version: '1.6.0' })
+
+    // 第一次失败：应该试一次，并记一条警告
+    let t = scheduleHeartbeat({
+      cfg: { telemetryUrl: 'http://127.0.0.1:1/hb' }, logger, home,
+      version: '1.6.0', sourceKind: 'git', platform: 'linux', delayMs: 1000,
+    })
+    await new Promise((r) => setTimeout(r, 1800))
+    if (t) clearTimeout(t)
+    if (logs.length !== 1) fail('首次失败应记 1 条警告，实际 ' + logs.length)
+    const st1 = readState(home)
+    if (!st1.failAt) fail('失败应落盘 failAt 以启用退避')
+    if (Number(st1.failCount) !== 1) fail('failCount 应为 1，实际 ' + st1.failCount)
+
+    // 立刻再重启一次：退避期内不得再试、不得再刷日志
+    const before = logs.length
+    t = scheduleHeartbeat({
+      cfg: { telemetryUrl: 'http://127.0.0.1:1/hb' }, logger, home,
+      version: '1.6.0', sourceKind: 'git', platform: 'linux', delayMs: 1000,
+    })
+    await new Promise((r) => setTimeout(r, 1800))
+    if (t) clearTimeout(t)
+    if (logs.length !== before) fail('退避期内不应再刷警告，实际多了 ' + (logs.length - before) + ' 条')
+    ok('端点不可达：首次记一条警告，随后退避不再打扰')
+
+    // 退避窗口应随时间指数增长且封顶 24h
+    // 失败 1 次 → 窗口 30 分钟：刚失败(1 分钟前)必须还退避
+    const p1 = planSend({ state: { failAt: Date.now() - 60000, failCount: 1 }, installId: 'f'.repeat(32) })
+    if (p1.send) fail('失败 1 次后 30 分钟内应退避')
+    if (p1.reason !== 'backoff') fail('应返回 backoff，实际 ' + p1.reason)
+    // 过了 30 分钟就该重试
+    const p2 = planSend({ state: { failAt: Date.now() - 1900000, failCount: 1 }, installId: 'f'.repeat(32) })
+    if (!p2.send) fail('超过 30 分钟退避窗口后应重试')
+    // 失败很多次 → 封顶 24h：23 小时内仍退避
+    const p3 = planSend({ state: { failAt: Date.now() - 1800000, failCount: 99 }, installId: 'f'.repeat(32), now: Date.now() + 23 * 3600000 })
+    if (p3.send) fail('封顶 24h：23 小时内仍应退避，实际会重试')
+    // 超过 24h 应重试
+    const p4 = planSend({ state: { failAt: Date.now() - 1800000, failCount: 99 }, installId: 'f'.repeat(32), now: Date.now() + 25 * 3600000 })
+    if (!p4.send) fail('封顶 24h：超过 24 小时应重试')
+    ok('退避指数增长且封顶 24h')
+
+    // 恢复后应清零失败计数，回到正常日报节奏
+    writeState(home, { ...readState(home), failAt: 0, failCount: 0 })
+    const sent = []
+    const fakeFetch = async (u, i) => { sent.push(JSON.parse(i.body)); return new Response('', { status: 202 }) }
+    t = scheduleHeartbeat({
+      cfg: { telemetryUrl: 'http://127.0.0.1:9/hb' }, logger, home,
+      version: '1.6.0', sourceKind: 'git', platform: 'linux', fetchImpl: fakeFetch, delayMs: 1000,
+    })
+    await new Promise((r) => setTimeout(r, 1800))
+    if (t) clearTimeout(t)
+    if (sent.length !== 1) fail('恢复后应正常上报 1 次，实际 ' + sent.length)
+    const st2 = readState(home)
+    if (Number(st2.failCount) !== 0) fail('成功后 failCount 应清零，实际 ' + st2.failCount)
+    ok('恢复后清零失败计数并继续上报')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+}
+
 console.log(process.exitCode ? '\nHEARTBEAT FAILED' : 'PASS heartbeat (no identity fields, opt-out works, endpoint silent by default)')
