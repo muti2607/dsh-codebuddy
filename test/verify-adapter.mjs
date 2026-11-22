@@ -201,7 +201,7 @@ if (isExpired({ expires_at: String(Date.now() + 600_000) })) fail("未过期被�
 if (!isExpired({ expires_at: String(Date.now() - 1) })) fail("已过期被判未过期")
 
 // ---- 5. 模型表 ----
-if (FALLBACK_MODELS.length < 10) fail("兜底模型太少")
+if (FALLBACK_MODELS.filter((m) => m.id !== "hy4free").length < 10) fail("兜底模型太少")
 const ids = new Set(FALLBACK_MODELS.map((m) => m.id))
 for (const need of ["deepseek-v4.1-flash", "glm-5.3", "kimi-k3-1"]) if (!ids.has(need)) fail("缺模型 " + need)
 
@@ -246,7 +246,7 @@ else {
   // 默认重试 1 次：瞬时故障自愈，又不放大成刷屏
   if (policy.maxRetries !== 1) fail("默认 maxRetries 应为 1，实际 " + policy.maxRetries)
   const models = await a.listModels()
-  if (models.length !== FALLBACK_MODELS.length) fail("listModels 数量不对: " + models.length)
+  if (models.length !== FALLBACK_MODELS.filter((m) => m.id !== "hy4free").length) fail("listModels 数量不对: " + models.length)
   if (models[0].provider !== "codebuddy") fail("listModels provider 不对")
   const rm = await a.resolveModel("codebuddy", "deepseek-v4.1-flash")
   if (!rm.context || rm.context.contextWindow !== 1_000_000) fail("resolveModel context 不对: " + JSON.stringify(rm.context))
@@ -364,4 +364,4 @@ dispose()
   }
 }
 
-console.log(JSON.stringify({ ok: !process.exitCode, models: FALLBACK_MODELS.length, neutralSystemChars: NEUTRAL_SYSTEM.length }, null, 2))
+console.log(JSON.stringify({ ok: !process.exitCode, models: FALLBACK_MODELS.filter((m) => m.id !== "hy4free").length, neutralSystemChars: NEUTRAL_SYSTEM.length }, null, 2))

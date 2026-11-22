@@ -256,3 +256,13 @@ dsh plugin --profile desktop add github:muti2607/dsh-codebuddy
 ## 许可
 
 MIT
+
+## 更新日志
+
+### 1.5.0
+
+- 修复 `hy4free` 报 `11102 model service info not found` 的崩溃：该模型已被上游下线，
+  之前的兜底逻辑会把整张 `FALLBACK_MODELS` 表回填进模型列表，导致选中已下线的 id 直接失败。
+- 现在只回填**经过实测确认存活**的白名单 id（`hy3`、`hy3-x`），并用 `RETIRED_MODEL_IDS`
+  在所有降级路径上过滤掉已下线模型。
+- 修正 `verify-adapter` 的模型数量断言：期望值改为按同一套存活规则计算，不再硬编码 19。

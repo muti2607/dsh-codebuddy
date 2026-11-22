@@ -1422,6 +1422,35 @@ function install(ctx, cfg, logger, modelBridge) {
   }
 
   /**
+   * 明确「已确认还活着」的 legacy 模型白名单。
+   *
+   * 只有这里列出的 id 才会被补回列表。**这是白名单，不是黑名单**：
+   * 上一版用的是「兜底表里远端没有的全都补回来」，结果把早就死掉的 hy4free
+   * 也补了回来，用户一选就炸：
+   *   HTTP 400 code 11102 "model [hy4free] service info not found"
+   * 兜底表是「远端拿不到时的应急清单」，它的条目**从未被逐个验证过**，
+   * 不能反过来当成「这些模型都还能用」的证据。
+   *
+   * 新增条目必须先实测：对 /v2/chat/completions 发一次 model=<id>，
+   * 拿到 200（SSE 或有内容）才允许写进来。只探测过 11102 之外的错误不算数。
+   */
+  const LEGACY_BACKFILL_IDS = ['hy3', 'hy3-x']
+
+  /**
+   * 确认已下线、不该再出现在任何清单里的模型。
+   *
+   * hy4free 实测返回 11102 service info not found（2026-11-22）。
+   * 即使它仍在兜底表里（兜底表是应急清单，不好随手删条目），
+   * 这里也会把它从「远端为空」的降级路径里一并滤掉，
+   * 否则远端一挂，用户又会在选择器里看到这个必炸的模型。
+   */
+  const RETIRED_MODEL_IDS = new Set(['hy4free'])
+
+  function aliveFallback() {
+    return FALLBACK_MODELS.filter((m) => !RETIRED_MODEL_IDS.has(String(m.id)))
+  }
+
+  /**
    * 把「远端目录已不再列出、但接口仍然认」的模型补回来。
    *
    * 实测（2026-11-22）：腾讯把 `hy3` / `hy3-x` 从 /v3/config 的模型列表里撤了，
@@ -1429,18 +1458,20 @@ function install(ctx, cfg, logger, modelBridge) {
    * 说明模型没下线，只是不再出现在 IDE 的目录里。
    *
    * 早先插件完全以远端目录为准，于是这些「还能用但没列出来」的模型就凭空消失了
-   * ——用户看到的就是「我的 hy3 没了」。这里以内置兜底表补位：
+   * ——用户看到的就是「我的 hy3 没了」。这里用**白名单**补位（见 LEGACY_BACKFILL_IDS）：
    *   · 远端有的，用远端（新；名字/上下文都是最新的）
-   *   · 远端没有、兜底表里有的，追加为 legacy（旧但还能调）
+   *   · 远端没有、白名单里有的，追加为 legacy（旧但实测还能调）
    *
    * 补进来的标 `legacy: true`，设置页会打个「旧」标签；用户不想要可以用
    * 模型开关关掉——这也是为什么敢补：有开关兜底，误补不会变成麻烦。
    */
   function mergeLegacyModels(remote) {
-    if (!Array.isArray(remote) || remote.length === 0) return FALLBACK_MODELS
+    if (!Array.isArray(remote) || remote.length === 0) return aliveFallback()
     const have = new Set(remote.map((m) => String(m.id)))
+    const allow = new Set(LEGACY_BACKFILL_IDS)
     const legacy = FALLBACK_MODELS
-      .filter((m) => !have.has(String(m.id)))
+      // 白名单 ∩ 兜底表：兜底表里没有这个 id 就无从补起
+      .filter((m) => allow.has(String(m.id)) && !have.has(String(m.id)))
       .map((m) => ({ ...m, legacy: true }))
     return [...remote, ...legacy]
   }
