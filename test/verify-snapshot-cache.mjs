@@ -94,8 +94,38 @@ try {
     try { fs.rmSync(roHome, { recursive: true, force: true }) } catch {}
   }
 
+  // 11. 静态断言：Host 侧真的把快照接进了两条读路径，且预热存在。
+  //     这几条是「改动删掉也不会有人发现」的地方 —— 快照功能悄悄失效时，
+  //     症状只是「又变慢了」，不会报错，所以必须在测试里钉住。
+  const indexSrc = fs.readFileSync(path.join(ROOT, 'index.js'), 'utf8')
+  assert.ok(
+    /readSnapshot\(\s*home\(\),\s*snapName/.test(indexSrc),
+    'GET /api/cb/credits 必须先读磁盘快照',
+  )
+  assert.ok(
+    /writeSnapshot\(\s*home\(\),\s*snapName/.test(indexSrc),
+    'GET /api/cb/credits 成功后必须写快照',
+  )
+  assert.ok(
+    /readSnapshot\(\s*accountHome\(\),\s*'catalogue'/.test(indexSrc),
+    'ensureCatalogue 冷启动必须读目录快照',
+  )
+  assert.ok(
+    /state\.catalogueSource === 'remote'/.test(indexSrc),
+    '只有远端目录才允许落盘（兜底表不能冒充事实）',
+  )
+  assert.ok(
+    /credits-\$\{account\.id\}/.test(indexSrc),
+    '积分快照必须按账号隔离',
+  )
+  // 预热：全新机器第一次打开也要快，所以 Host 起来后应主动查一次
+  assert.ok(
+    /readSnapshot\(home\(\), `credits-\$\{account\.id\}`, 300_000\)/.test(indexSrc),
+    '装载预热应跳过已新鲜的快照，避免无谓请求',
+  )
+
   const size = fs.statSync(path.join(home, 'dsh-codebuddy', 'catalogue.snapshot.json')).size
-  console.log(`PASS snapshot cache (catalogue snapshot ${size}B, cold-read instant)`)
+  console.log(`PASS snapshot cache (catalogue snapshot ${size}B, cold-read instant, wiring pinned)`)
 } finally {
   cleanup()
 }

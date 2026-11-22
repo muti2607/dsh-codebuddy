@@ -873,6 +873,42 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
   if (!server || typeof server.register !== 'function') return () => {}
 
   const home = () => String(cfg.dshHome || '').trim() || dshHome()
+
+  /**
+   * 装载后异步预热积分，让「第一次打开设置区」不必自己等上游。
+   *
+   * 快照能救「装过并用过」的机器，但**全新机器第一次**没有任何快照可读，
+   * 仍要等上游最多 4 秒。这里在 Host 起来时就并行发起一次查询并落盘：
+   * 用户通常要过一会儿才会点开设置区，等点开时快照已经写好了。
+   *
+   * 全部包在 try/catch 里、且延迟到下一轮事件循环：预热失败绝不能影响
+   * 插件装载（没登录过账号时这里本来就是空转）。
+   */
+  try {
+    setTimeout(() => {
+      Promise.resolve().then(async () => {
+        try {
+          const list = readAccounts(home()).filter((a) => a.enabled !== false)
+          if (list.length === 0) return
+          if (!credentials || typeof credentials.resolve !== 'function') return
+          await Promise.all(list.map(async (account) => {
+            try {
+              const resolved = await credentials.resolve(account.credentialRef)
+              if (!resolved || typeof resolved.value !== 'string') return
+              const parsed = JSON.parse(resolved.value)
+              if (!parsed || typeof parsed.access_token !== 'string') return
+              // 已有新鲜快照就不必再打一次上游
+              const snap = readSnapshot(home(), `credits-${account.id}`, 300_000)
+              if (snap) return
+              const product = PRODUCTS[account.provider] || PRODUCTS.buddy
+              const overview = await fetchCreditOverview(product, parsed)
+              if (overview && overview.ok) writeSnapshot(home(), `credits-${account.id}`, overview)
+            } catch { /* 单个账号预热失败不影响其它账号 */ }
+          }))
+        } catch { /* 预热整体失败静默 */ }
+      })
+    }, 1500)
+  } catch {}
   /** accountId -> 进行中的登录会话 */
   const logins = new Map()
   const LOGIN_TTL_MS = 10 * 60_000
