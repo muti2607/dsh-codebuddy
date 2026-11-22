@@ -55,6 +55,7 @@ import {
   newAccountId,
 } from './src/account-store.js'
 import { readSnapshot, writeSnapshot, dropSnapshot } from './src/snapshot-cache.js'
+import { scheduleHeartbeat, readState as readTelemetryState, readInstallId, DEFAULT_TELEMETRY_URL } from './src/heartbeat.js'
 
 const PROVIDER = 'codebuddy'
 const DISPLAY_NAME = 'CodeBuddy (腾讯免费)'
@@ -798,6 +799,31 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
             installSource: inspectInstallSource(profileDirFromEnv() ?? ''),
           })
         }
+        if (url.pathname === '/api/codebuddy/telemetry') {
+          // 透明的一部分：让用户（和自检）能查到「到底会不会发、已经发了什么」。
+          // 这里**绝不回传端点之外的任何内容**，也不做任何发送。
+          const home = String(cfg.dshHome || '').trim() || dshHome()
+          const enabled = cfg.telemetry !== false
+          const url2 = String(cfg.telemetryUrl || DEFAULT_TELEMETRY_URL || '').trim()
+          const state = readTelemetryState(home)
+          return json(200, {
+            ok: true,
+            // 未配置端点时实际不会发出任何请求
+            enabled: enabled && !!url2,
+            reason: !enabled ? 'disabled-by-config' : (!url2 ? 'endpoint-not-configured' : 'active'),
+            endpointConfigured: !!url2,
+            // 安装 ID 本身就是本地的随机数，可以给用户看，方便他判断/重置
+            installId: readInstallId(home),
+            lastReport: state.lastAt ? {
+              day: state.day,
+              version: state.version,
+              count: state.count,
+            } : null,
+            // 字段清单公开在这里，比写在 README 里更难说谎
+            fields: ['event', 'installId', 'version', 'platform', 'source', 'day'],
+            neverSent: ['账号', 'token', '项目路径', '主机名', '用户名', '邮箱', 'IP'],
+          })
+        }
         return json(404, { ok: false, error: 'not found' })
       } catch (error) {
         return json(500, { ok: false, error: String(error && error.message || error) })
@@ -848,7 +874,32 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
     timer = { initial: timer, interval }
   }
 
+  // ---- 透明心跳 ----
+  //
+  // 只上报：安装 ID（本地随机）、版本号、平台、安装来源种类、日期。
+  // 不发账号、不发 token、不发路径、不发主机名。默认开启，`telemetry: false` 关闭。
+  // 未配置 telemetryUrl 且默认端点为空的组合下，这里直接 return，不发任何请求。
+  let heartbeatTimer = null
+  try {
+    heartbeatTimer = scheduleHeartbeat({
+      cfg,
+      logger,
+      home: String(cfg.dshHome || '').trim() || dshHome(),
+      version: (() => { try { return readLocalVersion(moduleDir()) } catch { return '' } })(),
+      sourceKind: (() => {
+        try {
+          const pd = profileDirFromEnv()
+          return pd === null ? 'unknown' : inspectInstallSource(pd).kind
+        } catch { return 'unknown' }
+      })(),
+      platform: process.platform,
+    })
+  } catch { /* 统计绝不能影响装载 */ }
+
   return () => {
+    try {
+      if (heartbeatTimer) clearTimeout(heartbeatTimer)
+    } catch { /* ignore */ }
     try {
       if (timer && typeof timer === 'object') {
         clearTimeout(timer.initial)

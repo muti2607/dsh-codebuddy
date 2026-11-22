@@ -1,0 +1,213 @@
+/**
+ * 透明心跳测试：把「透明」这两个字变成可执行的断言。
+ *
+ * 重点不是"能发出去"，而是**发出去的东西里不许有身份信息**。
+ * 任何一条红了，就说明 README 里那句承诺变成了假话。
+ *
+ * Run: node test/verify-heartbeat.mjs
+ */
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import {
+  DEFAULT_TELEMETRY_URL,
+  readInstallId,
+  buildPayload,
+  planSend,
+  readState,
+  writeState,
+  sendHeartbeat,
+  scheduleHeartbeat,
+} from '../src/heartbeat.js'
+
+const fail = (m) => { console.error('FAIL: ' + m); process.exitCode = 1 }
+const ok = (m) => console.log('  ok ' + m)
+
+// ---- 1. 安装 ID：本地随机、稳定、可持久化 ----
+{
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb-'))
+  try {
+    const a = readInstallId(home)
+    const b = readInstallId(home)
+    if (!a) fail('应生成安装 ID')
+    if (!/^[0-9a-f]{32}$/.test(a)) fail('安装 ID 应是 32 位 hex: ' + a)
+    if (a !== b) fail('同一台机器上安装 ID 必须稳定')
+    // 不同 home 必须得到不同 ID（否则等于给所有人发同一个号）
+    const home2 = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb2-'))
+    const c = readInstallId(home2)
+    if (a === c) fail('不同安装必须得到不同 ID')
+    // 文件里只允许有 id 一个字段
+    const raw = JSON.parse(fs.readFileSync(path.join(home, 'dsh-codebuddy', 'install-id.json'), 'utf8'))
+    if (Object.keys(raw).join(',') !== 'id') fail('install-id.json 只应有 id 字段，实际: ' + Object.keys(raw).join(','))
+    fs.rmSync(home2, { recursive: true, force: true })
+    ok('安装 ID 随机且稳定，文件只含 id')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+}
+
+// ---- 2. payload 契约：只允许这 6 个字段，且不含任何身份信息 ----
+{
+  const p = buildPayload({
+    installId: 'a'.repeat(32),
+    version: '1.5.4',
+    platform: 'linux',
+    sourceKind: 'git',
+    event: 'install',
+  })
+  const allowed = ['event', 'installId', 'version', 'platform', 'source', 'day']
+  const keys = Object.keys(p).sort()
+  if (keys.join(',') !== [...allowed].sort().join(',')) {
+    fail('payload 字段必须恰好是 ' + allowed.join(',') + '，实际: ' + keys.join(','))
+  }
+  // 逐条确认没有任何身份/环境字段
+  const banned = ['hostname', 'username', 'user', 'home', 'cwd', 'path', 'token',
+    'accessToken', 'access_token', 'refresh_token', 'email', 'machineId', 'mac', 'ip', 'env', 'argv']
+  const json = JSON.stringify(p)
+  for (const b of banned) {
+    if (json.includes('"' + b + '"')) fail('payload 不得包含字段: ' + b)
+  }
+  // 值本身也不许出现这些东西
+  for (const bad of ['/', '\\', '@', 'Bearer', 'eyJ']) {
+    if (String(p.version).includes(bad) || String(p.source).includes(bad)) fail('字段值不应含 ' + bad)
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(p.day)) fail('day 只精确到日期: ' + p.day)
+  ok('payload 只有 6 个白名单字段，无身份信息')
+}
+
+// ---- 3. 同日不重复上报；首报是 install，之后是 daily ----
+{
+  const id = 'b'.repeat(32)
+  const today = '2026-11-22'
+  const now = Date.parse(today + 'T10:00:00Z')
+  const first = planSend({ state: {}, installId: id, now })
+  if (!first.send) fail('首次应上报')
+  if (first.event !== 'install') fail('首次事件应是 install，实际 ' + first.event)
+
+  const sameDay = planSend({ state: { day: today, firstAt: now - 86400000 }, installId: id, now })
+  if (sameDay.send) fail('同一天不得重复上报（会刷量）')
+  if (sameDay.reason !== 'already-reported-today') fail('同日应说明原因，实际 ' + sameDay.reason)
+
+  const nextDay = planSend({ state: { day: today, firstAt: now - 86400000 }, installId: id, now: now + 86400000 })
+  if (!nextDay.send) fail('隔天应上报')
+  if (nextDay.event !== 'daily') fail('隔天事件应是 daily，实际 ' + nextDay.event)
+
+  const noId = planSend({ state: {}, installId: null, now })
+  if (noId.send) fail('没有安装 ID 时不得上报')
+  if (noId.reason !== 'no-install-id') fail('应说明 no-install-id')
+  ok('同日去重、install/daily 区分正确')
+}
+
+// ---- 4. 未配置端点 → 一个请求都不发 ----
+{
+  let called = 0
+  const fakeFetch = async () => { called++; return new Response('{}', { status: 202 }) }
+  const r = await sendHeartbeat({
+    url: '',
+    payload: buildPayload({ installId: 'c'.repeat(32), version: '1', platform: 'linux', sourceKind: 'git' }),
+    fetchImpl: fakeFetch,
+  })
+  if (called !== 0) fail('未配置端点时不得发请求，实际发了 ' + called + ' 次')
+  if (!r.skipped) fail('未配置端点应标记 skipped')
+  if (r.ok) fail('skipped 不应算成功')
+  ok('端点为空的默认状态：零请求')
+}
+
+// ---- 5. 网络失败绝不 throw（统计不能影响主功能）----
+{
+  const boom = async () => { throw new Error('ECONNREFUSED') }
+  const r = await sendHeartbeat({
+    url: 'http://127.0.0.1:9/x',
+    payload: buildPayload({ installId: 'd'.repeat(32), version: '1', platform: 'linux', sourceKind: 'git' }),
+    fetchImpl: boom,
+  })
+  if (r.ok) fail('抛错不应算成功')
+  if (!r.error) fail('应带回错误信息供日志用')
+  // 关键：这里没有 throw，函数正常返回了
+  ok('网络失败被吞掉，不 throw')
+}
+
+// ---- 6. 超时会被 abort，不会挂住后台任务 ----
+{
+  // 永不 resolve 的 fetch，必须被 timeout 掐断
+  const hang = (url, init) => new Promise((_res, rej) => {
+    init.signal.addEventListener('abort', () => rej(new Error('aborted')))
+  })
+  const started = Date.now()
+  const r = await sendHeartbeat({
+    url: 'http://127.0.0.1:9/x',
+    payload: buildPayload({ installId: 'e'.repeat(32), version: '1', platform: 'linux', sourceKind: 'git' }),
+    fetchImpl: hang,
+    timeoutMs: 300,
+  })
+  const took = Date.now() - started
+  if (r.ok) fail('超时不应算成功')
+  if (took > 2000) fail('超时未生效，耗时 ' + took + 'ms')
+  ok('超时生效（' + took + 'ms）')
+}
+
+// ---- 7. telemetry:false 一个定时器都不建 ----
+{
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb3-'))
+  try {
+    const t = scheduleHeartbeat({
+      cfg: { telemetry: false, telemetryUrl: 'http://127.0.0.1:9/x' },
+      logger: {},
+      home,
+      version: '1',
+      sourceKind: 'git',
+      platform: 'linux',
+    })
+    if (t !== null) fail('telemetry:false 时不得建立定时器')
+    ok('telemetry:false 完全关闭')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+}
+
+// ---- 8. 状态读写失败静默 ----
+{
+  const state = readState('Z:/definitely/not/a/real/path/xyz')
+  if (typeof state !== 'object') fail('读不到状态应返回空对象')
+  const w = writeState('Z:/definitely/not/a/real/path/xyz', { day: 'x' })
+  if (w !== false) fail('写不进去应返回 false')
+  ok('状态读写失败静默')
+}
+
+// ---- 9. 默认端点为空（未经配置就不会有任何外部请求）----
+{
+  if (DEFAULT_TELEMETRY_URL !== '') {
+    fail('默认端点必须为空：未经用户配置不得发出任何外部请求，实际 ' + DEFAULT_TELEMETRY_URL)
+  }
+  ok('默认端点为空，装上即静默')
+}
+
+// ---- 10. 完整链路：配置端点后能发且状态落盘 ----
+{
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb4-'))
+  try {
+    const sent = []
+    const fakeFetch = async (url, init) => {
+      sent.push({ url, body: JSON.parse(init.body) })
+      return new Response('', { status: 202 })
+    }
+    const timer = scheduleHeartbeat({
+      cfg: { telemetryUrl: 'http://127.0.0.1:9/hb', dshHome: home },
+      logger: {},
+      home,
+      version: '1.5.4',
+      sourceKind: 'git',
+      platform: 'linux',
+      fetchImpl: fakeFetch,
+      delayMs: 1000,
+    })
+    if (!timer) fail('配置端点后应建立定时器')
+    // 等它真的跑一次
+    await new Promise((r) => setTimeout(r, 1600))
+    if (sent.length !== 1) fail('应发出 1 次心跳，实际 ' + sent.length)
+    if (sent[0] && sent[0].body.event !== 'install') fail('第一次应是 install')
+    if (sent[0] && sent[0].body.version !== '1.5.4') fail('应带版本号')
+    const st = readState(home)
+    if (!st.day) fail('发送成功后状态应落盘')
+    if (Number(st.count) !== 1) fail('count 应为 1，实际 ' + st.count)
+    ok('配置端点后发出 1 次并落盘')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+}
+
+console.log(process.exitCode ? '\nHEARTBEAT FAILED' : 'PASS heartbeat (no identity fields, opt-out works, endpoint silent by default)')

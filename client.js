@@ -65,6 +65,11 @@ window.__ModuleLoader__.load({
         updateLocalHint: '当前是从本地文件安装的，插件不能自己替换文件，所以这里不提供「立即更新」。'
           + '要启用自更新，请重新安装：dsh plugin --profile desktop add github:muti2607/dsh-codebuddy',
         reloadHint: '登录后即可在模型选择器里选择；若列表未刷新，切换一次模型即可。',
+        // ── 透明心跳 ──
+        telemetryOn: '匿名使用统计：已开启，每天最多一次。只上报版本号、平台、安装来源和日期，'
+          + '不含账号、token、路径或主机名。想关闭：在插件配置里设 telemetry: false。',
+        telemetryLast: '上次上报：{d}（v{v}）',
+        telemetryNever: '从未上报的内容：',
         neverExpire: '长期有效',
         // ── 积分 ──
         secCredits: '积分',
@@ -155,6 +160,11 @@ window.__ModuleLoader__.load({
         updateLocalHint: 'Installed from a local file, so the plugin cannot replace itself. '
           + 'Reinstall to enable self-update: dsh plugin --profile desktop add github:muti2607/dsh-codebuddy',
         reloadHint: 'Models are selectable right after sign-in. If the picker looks stale, switch models once.',
+        // ── telemetry ──
+        telemetryOn: 'Anonymous usage stats: on, at most once a day. Reports only version, platform, '
+          + 'install source and date — never accounts, tokens, paths or hostnames. To opt out: set telemetry: false.',
+        telemetryLast: 'Last reported: {d} (v{v})',
+        telemetryNever: 'Never sent:',
         neverExpire: 'No expiry',
         // ── credits ──
         secCredits: 'Credits',
@@ -362,6 +372,7 @@ window.__ModuleLoader__.load({
       const [notice, setNotice] = useState('')
       const [login, setLogin] = useState(null)
       const [ver, setVer] = useState(null)
+      const [telemetry, setTelemetry] = useState(null)
       const [update, setUpdate] = useState(null)
       const [updating, setUpdating] = useState(false)
       // 积分：credits = 最近一次 /credits 的返回（含各账号明细与汇总）
@@ -404,6 +415,8 @@ window.__ModuleLoader__.load({
         loadCredits()
         loadModels()
         apiMain('/version').then(setVer).catch(() => {})
+        // 心跳状态：让用户能自己看到「发不发、发了什么」，而不是只能听我们保证。
+        apiMain('/telemetry').then(setTelemetry).catch(() => {})
         return () => { if (pollRef.current) clearInterval(pollRef.current) }
       }, [])
 
@@ -847,6 +860,20 @@ window.__ModuleLoader__.load({
             update && update.available && update.updatable === false
               ? h('div', { className: 'cb_note' }, t('updateLocalHint')
                 + (update.installSource && update.installSource.spec ? '（' + update.installSource.spec + '）' : ''))
+              : null,
+            // 透明心跳：把「发了什么 / 没发什么」直接摆在界面上。
+            // 配了端点才显示，没配就不占地方（默认状态就是完全静默）。
+            telemetry && telemetry.enabled
+              ? h('div', { className: 'cb_note cb_telemetry' },
+                h('div', null, t('telemetryOn')),
+                telemetry.lastReport
+                  ? h('div', { className: 'cb_cachedhint' },
+                    t('telemetryLast')
+                      .replace('{d}', String(telemetry.lastReport.day || ''))
+                      .replace('{v}', String(telemetry.lastReport.version || '')))
+                  : null,
+                h('div', { className: 'cb_cachedhint' }, t('telemetryNever')
+                  + ' ' + String((telemetry.neverSent || []).join('、') || '')))
               : null)),
 
         h('div', { className: 'cb_note' }, t('reloadHint')))

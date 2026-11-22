@@ -259,6 +259,39 @@ MIT
 
 ## 更新日志
 
+### 1.6.0
+
+**匿名使用统计（透明心跳）**。这是本插件第一次对外发送任何数据，所以把细节全部摊开写：
+
+- **发什么**：只有这 6 个字段——`event`（install/daily）、`installId`、`version`、
+  `platform`（仅 win32/darwin/linux）、`source`（git/local/other）、`day`（只到日期）。
+- **不发什么**：账号、token、refresh_token、项目路径、主机名、用户名、邮箱、IP、
+  环境变量、机器指纹。`test/verify-heartbeat.mjs` 对这些做了逐条断言，红了就不许发。
+- **installId 是本地随机数**（32 位 hex，首次装载时生成），与你的任何真实身份无关；
+  存在 `~/.dsh/dsh-codebuddy/install-id.json`，删掉即换新号。它只是用来做去重——
+  同一台机器重装 10 次也只算 1 个安装。
+- **频率**：每天最多一次，同一天不重复上报（服务端也做同样的去重）。
+- **默认状态**：`telemetryUrl` 为空时**一个请求都不发**。也就是说本插件本身完全静默，
+  只有你自己配了接收端才会开始上报。想彻底关掉：`telemetry: false`。
+- **自己查**：`GET /api/codebuddy/telemetry` 会返回当前是否开启、上次上报时间、
+  以及完整的字段清单（`fields` / `neverSent`）。设置页也会显示这段说明。
+- **接收端**：`server/heartbeat-server.mjs` 单文件零依赖，`node server/heartbeat-server.mjs`
+  起来即可，`GET /stats` 看汇总（总安装数 / 7 日活跃 / 30 日活跃 / 平台与版本分布）。
+  详见该文件头部注释。
+
+启用方式（二选一）：
+
+```yaml
+# 1. 在 DSH 的插件配置里写死
+telemetry: true
+telemetryUrl: https://你的域名/hb
+```
+
+```bash
+# 2. 或部署接收端后把地址填进去
+node server/heartbeat-server.mjs   # 默认 :8787，数据落 heartbeat-data/events.ndjson
+```
+
 ### 1.5.4
 
 1.5.3 之后，别人的机器上仍然报「模型清单读取失败」。查下来不是速度问题，
