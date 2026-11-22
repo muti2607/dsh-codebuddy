@@ -273,8 +273,9 @@ MIT
 - **积分卡片加了超时闸**：`src/credits.js` 的上游请求统一走 `fetchWithTimeout`
   （`AbortController` + 4 秒，`finally` 清定时器）。超时抛 `TimeoutError`，
   不再无限期转圈；调用方自己取消时仍原样抛 `AbortError`，不会被误判成超时。
-- **积分结果缓存 30 秒 + in-flight 去重**：`POST /api/cb/credits/claim` 会主动失效缓存，
-  领完立刻能看到新余额。
+- **积分结果缓存 30 秒 + in-flight 去重 + 同样是 stale-while-revalidate**：缓存过期
+  立刻返回旧值并后台刷新（实测上游 billing 会抽到 2.6s，正好在 30s 边界打开设置区
+  就要干等一次）；`POST /api/cb/credits/claim` 会主动失效缓存，领完立刻看到新余额。
 - 新增 `verify-credits-timeout`、`verify-credits-cache` 两套件：前者用「只有 abort 才
   settle」的 mock fetch 验证 4 秒闸与取消传播，后者用对象身份验证缓存命中、失效与并发共享。
 

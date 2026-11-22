@@ -294,21 +294,39 @@ export async function fetchCreditOverview(product, credential, signal) {
   const key = JSON.stringify([product, credential, signal]);
   const hit = __creditCache.get(key);
   if (hit && Date.now() - hit.at < __CREDIT_TTL_MS) return hit.value;
-  const running = __creditInflight.get(key);
-  if (running) return running;
-  const task = (async () => {
-    try {
-      const value = await __raw_fetchCreditOverview(product, credential, signal);
-      if (value && typeof value === 'object' && !value.error) {
-        __creditCache.set(key, { at: Date.now(), value });
+
+  // 并发调用共享同一次拉取：否则缓存过期瞬间被多个入口同时触发，
+  // 会把同一组 billing 请求打出去好几遍。
+  const startRefresh = () => {
+    const running = __creditInflight.get(key);
+    if (running) return running;
+    const task = (async () => {
+      try {
+        const value = await __raw_fetchCreditOverview(product, credential, signal);
+        if (value && typeof value === 'object' && !value.error) {
+          __creditCache.set(key, { at: Date.now(), value });
+        }
+        return value;
+      } finally {
+        __creditInflight.delete(key);
       }
-      return value;
-    } finally {
-      __creditInflight.delete(key);
-    }
-  })();
-  __creditInflight.set(key, task);
-  return task;
+    })();
+    __creditInflight.set(key, task);
+    return task;
+  };
+
+  // 缓存过期：立刻返回旧值，后台静默刷新（stale-while-revalidate）。
+  //
+  // 上游 billing 实测会抽到 2.6s，而 TTL 只有 30s —— 若过期后同步等，
+  // 恰好在那 30s 边界打开设置区的人就要干等一次。旧值并不比新值错，
+  // 差的是几十秒的新鲜度，用户完全感觉不到；干等 2.6s 却很明显。
+  if (hit) {
+    startRefresh().catch(() => {});
+    return hit.value;
+  }
+
+  // 冷启动没有任何旧值可用，只能等（受 fetchWithTimeout 的 4s 上限约束）。
+  return startRefresh();
 }
 
 export async function claimDailyCredit(product, credential, signal) {
