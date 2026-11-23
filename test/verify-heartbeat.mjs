@@ -374,6 +374,10 @@ const ok = (m) => console.log('  ok ' + m)
     else ok('临时主目录不建立定时器，不会污染线上统计')
     if (!isTempHome(home)) fail('isTempHome 应认出临时目录')
     if (isTempHome('C:/Users/someone/.dsh')) fail('isTempHome 不应把真实主目录当临时目录')
+    // Windows 上 os.tmpdir() 就是 D:\\dsh_temp，用户自己在那儿建的目录不能被误判，
+    // 否则心跳会被静默拦掉（1.7.1 的 bug：统计版本一直停在旧值）
+    const realish = path.join(os.tmpdir(), 'my-real-dsh-home')
+    if (isTempHome(realish)) fail('真实主目录不应被当成临时目录：' + realish)
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 }
 
