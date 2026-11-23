@@ -810,7 +810,12 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
           // 这里**绝不回传端点之外的任何内容**，也不做任何发送。
           const home = String(cfg.dshHome || '').trim() || dshHome()
           const enabled = cfg.telemetry !== false
-          const url2 = String(cfg.telemetryUrl || DEFAULT_TELEMETRY_URL || '').trim()
+          // 与 scheduleHeartbeat 保持同一套语义：显式写空串 = 关闭，
+          // 只有"没配这个键"才用默认端点。否则界面会说"已开启"，实际却不发。
+          const explicitUrl = Object.prototype.hasOwnProperty.call(cfg, 'telemetryUrl')
+          const url2 = (explicitUrl
+            ? String(cfg.telemetryUrl || '')
+            : String(DEFAULT_TELEMETRY_URL || '')).trim()
           const state = readTelemetryState(home)
           return json(200, {
             ok: true,

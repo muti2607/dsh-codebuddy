@@ -70,6 +70,9 @@ window.__ModuleLoader__.load({
           + '不含账号、token、路径或主机名。想关闭：在插件配置里设 telemetry: false。',
         telemetryLast: '上次上报：{d}（v{v}）',
         telemetryNever: '从未上报的内容：',
+        // 给用户看自己的安装 ID，前 8 位就能和统计页表格对上号
+        telemetryId: '这台机器的安装 ID：{id}',
+        telemetryIdHint: '（统计页表格里显示的是它的前 8 位，可用它认出哪一行是你）',
         neverExpire: '长期有效',
         // ── 积分 ──
         secCredits: '积分',
@@ -165,6 +168,8 @@ window.__ModuleLoader__.load({
           + 'install source and date — never accounts, tokens, paths or hostnames. To opt out: set telemetry: false.',
         telemetryLast: 'Last reported: {d} (v{v})',
         telemetryNever: 'Never sent:',
+        telemetryId: 'Install ID of this machine: {id}',
+        telemetryIdHint: '(The stats table shows only its first 8 characters — use it to recognize your own row.)',
         neverExpire: 'No expiry',
         // ── credits ──
         secCredits: 'Credits',
@@ -873,7 +878,15 @@ window.__ModuleLoader__.load({
                       .replace('{v}', String(telemetry.lastReport.version || '')))
                   : null,
                 h('div', { className: 'cb_cachedhint' }, t('telemetryNever')
-                  + ' ' + String((telemetry.neverSent || []).join('、') || '')))
+                  + ' ' + String((telemetry.neverSent || []).join('、') || '')),
+                // 安装 ID 直接摆出来：用户有权知道"代表我的那个编号是什么"，
+                // 也能拿前 8 位去统计页认领自己那一行。
+                telemetry.installId
+                  ? h('div', { className: 'cb_cachedhint' },
+                    t('telemetryId').replace('{id}', String(telemetry.installId).slice(0, 8) + '…'),
+                    ' ',
+                    h('span', { title: String(telemetry.installId) }, t('telemetryIdHint')))
+                  : null)
               : null)),
 
         h('div', { className: 'cb_note' }, t('reloadHint')))
