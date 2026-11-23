@@ -39,6 +39,9 @@ import {
 } from './src/updater.js'
 import { PRODUCTS, beginBuddyLogin, completeBuddyLogin, openBrowser } from './src/buddy-login.js'
 import { fetchCreditOverview, claimDailyCredit } from './src/credits.js'
+// dsh-pet 余额查询兼容层：把 codebuddy 的积分接进它的桌宠气泡。
+// 没装 dsh-pet 时整条路径静默跳过（registerPetBalance 返回 null）。
+import { registerPetBalanceWhenReady } from './src/pet-balance.js'
 import {
   readModelPrefs,
   setModelEnabled,
@@ -2494,7 +2497,59 @@ function install(ctx, cfg, logger, modelBridge) {
     }
   })
 
+  // ---- dsh-pet 余额查询 ----
+  //
+  // dsh-pet 的气泡会显示「当前服务商的余额」，但只内置了 opencode /
+  // commandcode / deepseek 官方 / deepseek 账号四家，所以用本插件时它会报
+  // 「当前服务商暂不支持余额查询」。它为此留了公开扩展点
+  // （ctx.get('petApi7340').balance.register），这里把 codebuddy 注册进去。
+  //
+  // 时机：dsh-pet 不保证比我们先装载，所以注册器带有限次重试（约 30 秒）。
+  // 没装 dsh-pet 时它返回的句柄什么都不做，卸载时 stop() 也是空操作。
+  //
+  // 取数直接复用插件自己的账号池 + credits 接口，**不额外请求上游**：
+  // dsh-pet 默认每 60 秒问一次，若这里每次都真打上游，等于替它做无谓的轮询。
+  // 复用 fetchCreditOverview 的 30 秒进程内缓存与并发合并，天然不会打爆。
+  const petBalance = (() => {
+    try {
+      return registerPetBalanceWhenReady(ctx, {
+        logger,
+        async fetchTotalCredits() {
+          const list = readAccounts(home()).filter((a) => a.enabled !== false)
+          if (list.length === 0) throw new Error('还没有可用账号，请先添加 CodeBuddy 账号')
+
+          // 多账号时求和：dsh-pet 的气泡只有一个数字，显示"总额"比只显示
+          // 第一个账号更符合用户对"我还有多少积分"的预期。
+          const results = await Promise.all(list.map(async (account) => {
+            const resolved = await resolveCredValue(account.credentialRef)
+            if (!resolved || typeof resolved.value !== 'string') return null
+            let parsed
+            try { parsed = JSON.parse(resolved.value) } catch { return null }
+            if (!parsed || typeof parsed.access_token !== 'string') return null
+            const product = PRODUCTS[account.provider] || PRODUCTS.buddy
+            const overview = await fetchCreditOverview(product, parsed)
+            const balance = overview && overview.balance
+            if (!balance || typeof balance.total !== 'number') return null
+            return balance.total
+          }))
+
+          const usable = results.filter((v) => typeof v === 'number' && Number.isFinite(v))
+          if (usable.length === 0) {
+            // 全部账号都读不到凭据/余额时抛错，让 dsh-pet 显示「查询失败」，
+            // 而不是把 0 当成真实余额显示出去。
+            throw new Error('CodeBuddy 积分查询失败：没有账号能取到余额（可能需要重新登录）')
+          }
+          return usable.reduce((sum, v) => sum + v, 0)
+        },
+      })
+    } catch (error) {
+      logger.warn?.('[codebuddy] dsh-pet 余额注册初始化失败：' + String((error && error.message) || error))
+      return null
+    }
+  })()
+
   return () => {
+    try { if (petBalance && typeof petBalance.stop === 'function') petBalance.stop() } catch { /* ignore */ }
     try { if (registration && typeof registration.dispose === 'function') registration.dispose()
       else if (typeof registration === 'function') registration() } catch { /* ignore */ }
     for (const r of aliasRegistrations) {

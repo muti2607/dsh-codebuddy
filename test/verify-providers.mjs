@@ -378,6 +378,29 @@ for (const dir of homes) {
   check('heartbeat.js 的导出无漏导（漏了会让整条路由 500）', missing.length === 0, missing.join(', '))
 }
 
+// ---- 静态检查：index.js 依赖的本地文件必须都在 package.json 的 files 白名单里 ----
+// 教训：1.8.0 新增 src/pet-balance.js 并 import 了它，却忘了加进 files，
+// npm pack 时整份文件被丢掉，装到用户机上就是 MODULE_NOT_FOUND。
+// （本地开发永远发现不了，因为源码就在旁边。）
+{
+  const root = path.dirname(fileURLToPath(import.meta.url))
+  const idx = fs.readFileSync(path.join(root, '..', 'index.js'), 'utf8')
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, '..', 'package.json'), 'utf8'))
+  const files = Array.isArray(pkg.files) ? pkg.files : []
+  // 只挑本包内的相对导入（./src/xxx.js 这种），外部包不管
+  const localImports = [...idx.matchAll(/from '(\.\/[^']+)'/g)].map((m) => m[1].replace(/^\.\//, ''))
+  const notListed = localImports.filter((f) => {
+    if (files.includes(f)) return false
+    // 支持通配：src/*.js 之类
+    return !files.some((pat) => {
+      if (!pat.includes('*')) return false
+      const re = new RegExp('^' + pat.replace(/\./g, '\\.').replace(/\*/g, '[^/]*') + '$')
+      return re.test(f)
+    })
+  })
+  check('所有被 index.js 导入的本地文件都在 files 白名单（漏了会装不上）', notListed.length === 0, notListed.join(', '))
+}
+
 let bad = 0
 for (const { name, ok } of results) {
   if (!ok) bad += 1

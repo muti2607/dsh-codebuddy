@@ -259,6 +259,36 @@ MIT
 
 ## 更新日志
 
+### 1.8.0
+
+**与 dsh-pet 打通：桌宠气泡能显示 CodeBuddy 积分了。**
+
+装了 dsh-pet（桌宠插件）的话，气泡里本该显示当前服务商的余额，但它只内置了
+opencode / commandcode / deepseek 官方 / deepseek 账号四家，所以用本插件时它报：
+
+> 使用这个插件时会反应当前服务商暂不支持余额查询　当前服务商：codebuddy
+
+dsh-pet 为此留了公开扩展点——它把自己挂在 `ctx.provide('petApi7340', …)` 上，
+其中 `balance.register(def)` 允许第三方注册服务商（见其 `src/host/balance/registry.ts`）。
+本版新增 `src/pet-balance.js`，往那儿注册一个 `id: 'codebuddy'` 的取数实现。
+
+几条按 dsh-pet 契约来的约束：
+
+- **id 必须是 `codebuddy`**，与 `agentDefaultModel` 报告的名字完全一致；
+  别名（buddy 等）是运行时另起的，注册表按 id 精确匹配，所以只注册这一个。
+- **第三方拿不到宿主解析好的 key**，凭证得自己解决——这里复用本插件自己的
+  账号池与 `/api/cb/credits` 的取数路径。
+- **失败必须抛错**，由 dsh-pet 统一显示成 fetch-error。绝不能返回 0
+  假装"余额是 0"。
+- 显示形态用 `points`（单位「积分」），不填 `full` 档位基准：积分包的
+  单包容量与多包合计不是同一个分母，填错会让气泡显示"快用完了"，比不显示更糟。
+- **不额外请求上游**：dsh-pet 默认每分钟问一次，这里复用 credits 的
+  30 秒进程内缓存与并发合并，不会替它做无谓轮询。
+- **没装 dsh-pet 是完全正常的组合**，此时整条路径静默跳过；dsh-pet 比我们
+  晚装载时，注册器会用有限次重试（约 30 秒）补上。
+
+实测（本机真实账号）：`{"ok":true,"provider":"codebuddy","shape":"points","data":{"unit":"积分","total":"644.05"}}`
+
 ### 1.7.5
 
 给 1.7.4 修的两个 bug 各补一条回归测试，都已经过"故意改回旧代码会 FAIL"的验证：
