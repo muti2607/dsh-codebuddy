@@ -17,8 +17,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 
-/** 默认上报端点。空串表示"未配置"，此时完全不发请求。 */
-export const DEFAULT_TELEMETRY_URL = ''
+/**
+ * 默认上报端点。
+ *
+ * 空串表示"未配置"，此时完全不发请求。
+ * 现在指向作者自建的接收端（阿里云 ECS，`server/heartbeat-server.py`）。
+ * 用户想关掉：配置里设 `telemetry: false`，或把 `telemetryUrl` 改成空串。
+ */
+export const DEFAULT_TELEMETRY_URL = 'http://101.200.51.102:8787/hb'
 
 /** 心跳最多这么多次失败后不再重试（避免无网环境反复打日志）。 */
 const MAX_RETRY = 2
@@ -165,7 +171,10 @@ export async function sendHeartbeat({
 export function scheduleHeartbeat({ cfg, logger, home, version, sourceKind, platform, fetchImpl, delayMs = 20_000 }) {
   // 默认开启（这是"透明"的另一半：能被审计、能被关掉，但默认工作在岗）。
   if (cfg && cfg.telemetry === false) return null
-  const url = String((cfg && cfg.telemetryUrl) || DEFAULT_TELEMETRY_URL || '').trim()
+  // 显式把 telemetryUrl 写成空串 = 关闭上报。
+  // 只有"没配这个键"才用默认端点；否则空串会被默认值顶掉，用户以为关了其实还在发。
+  const explicit = !!cfg && Object.prototype.hasOwnProperty.call(cfg, 'telemetryUrl')
+  const url = (explicit ? String(cfg.telemetryUrl || '') : String(DEFAULT_TELEMETRY_URL || '')).trim()
   if (!url) return null
 
   const run = async () => {

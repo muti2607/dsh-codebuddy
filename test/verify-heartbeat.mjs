@@ -170,12 +170,45 @@ const ok = (m) => console.log('  ok ' + m)
   ok('状态读写失败静默')
 }
 
-// ---- 9. 默认端点为空（未经配置就不会有任何外部请求）----
+// ---- 9. 默认端点的约定（1.6.4 起默认为开启）----
+// 以前默认是空串（装上即静默）。现在作者自建了接收端，默认指向它，
+// 否则收不到任何数据。这里锁死三条约定：
+//   ① 默认端点必须是一个合法的 http(s) /hb 地址
+//   ② 显式 `telemetryUrl: ''` 必须等于关闭（不能回落成默认值）
+//   ③ 未配置时用的就是默认端点（用假 fetch 验证，绝不真的出网）
 {
-  if (DEFAULT_TELEMETRY_URL !== '') {
-    fail('默认端点必须为空：未经用户配置不得发出任何外部请求，实际 ' + DEFAULT_TELEMETRY_URL)
-  }
-  ok('默认端点为空，装上即静默')
+  const d = String(DEFAULT_TELEMETRY_URL || '')
+  if (!/^https?:\/\/[^\s]+$/.test(d)) fail('默认端点必须是合法 http(s) 地址，实际 ' + JSON.stringify(d))
+  if (!/\/hb$/.test(d)) fail('默认端点应以 /hb 结尾，实际 ' + d)
+  ok('默认端点合法：' + d)
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb9-'))
+  try {
+    // 显式空串 = 关闭，绝不能回落默认端点
+    const t1 = scheduleHeartbeat({
+      cfg: { telemetryUrl: '' }, logger: { warn() {} }, home,
+      version: '1.6.4', sourceKind: 'git', platform: 'linux', delayMs: 1000,
+    })
+    if (t1 !== null) { clearTimeout(t1); fail('telemetryUrl 显式为空串时必须完全不发') }
+    else ok('telemetryUrl 显式空串 = 关闭，不回落默认值')
+
+    // 未配置 trelemetryUrl → 走默认端点（假 fetch 拦截，不出网）
+    const sent = []
+    const fakeFetch = async (url, init) => {
+      sent.push({ url: String(url), body: JSON.parse(init.body) })
+      return new Response('{}', { status: 202 })
+    }
+    const t2 = scheduleHeartbeat({
+      cfg: {}, logger: { warn() {} }, home,
+      version: '1.6.4', sourceKind: 'git', platform: 'linux',
+      fetchImpl: fakeFetch, delayMs: 1000,
+    })
+    await new Promise((r) => setTimeout(r, 1800))
+    if (t2) clearTimeout(t2)
+    if (sent.length !== 1) fail('未配置时应发 1 次到默认端点，实际 ' + sent.length)
+    else if (!String(sent[0].url).startsWith(d)) fail('应发到默认端点，实际 ' + sent[0].url)
+    else ok('未配置时默认上报到内置接收端')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
 }
 
 // ---- 10. 完整链路：配置端点后能发且状态落盘 ----
@@ -277,4 +310,4 @@ const ok = (m) => console.log('  ok ' + m)
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 }
 
-console.log(process.exitCode ? '\nHEARTBEAT FAILED' : 'PASS heartbeat (no identity fields, opt-out works, endpoint silent by default)')
+console.log(process.exitCode ? '\nHEARTBEAT FAILED' : 'PASS heartbeat (no identity fields, opt-out works, backoff bounded)')
