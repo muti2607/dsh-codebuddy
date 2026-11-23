@@ -992,9 +992,17 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
    * 「没有 credentials 服务」。改成每次现取，服务后到也能用上。
    */
   const getCredentials = () => {
+    // 同 install() 侧：先 ctx.get（官方机会式查找，缺失返回 undefined），
+    // 失败再退回直接读。读 ctx.credentials 在真 cordis 代理上会抛
+    // "cannot get property ... without inject"（这条 inject 只声明 webServer），
+    // 所以它必须排在 get 之后、且包在 try 里。
     try {
-      const c = ctx.credentials || ctx.get?.('credentials')
-      return c && typeof c.resolve === 'function' ? c : null
+      const viaGet = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined
+      if (viaGet && typeof viaGet.resolve === 'function') return viaGet
+    } catch { /* ignore */ }
+    try {
+      const direct = ctx.credentials
+      return direct && typeof direct.resolve === 'function' ? direct : null
     } catch { return null }
   }
   if (!server || typeof server.register !== 'function') return () => {}
@@ -1454,9 +1462,21 @@ function install(ctx, cfg, logger, modelBridge) {
    * 而不是让整个渠道装不上。
    */
   const getCredSvc = () => {
+    // 只用 ctx.get：cordis 的 ctx 是代理，读未在 inject 里声明的服务会抛
+    // "cannot get property ... without inject"。原先写的是
+    // `ctx.credentials || ctx.get?.('credentials')`，前半截必抛，
+    // 于是永远走不到后半个机会式查找，这条回退等于没写。
+    //
+    // 先 get 再退回直接读：get 是官方的机会式查找（缺失返回 undefined），
+    // 是真实运行时的正路；直接读只对「普通对象 ctx」有意义（测试桩、以及
+    // 少数非代理场景）。顺序不能反过来——反了就会在真 cordis 上先抛。
     try {
-      const c = ctx.credentials || ctx.get?.('credentials')
-      return c && typeof c.resolve === 'function' ? c : null
+      const viaGet = typeof ctx.get === 'function' ? ctx.get('credentials') : undefined
+      if (viaGet && typeof viaGet.resolve === 'function') return viaGet
+    } catch { /* ignore */ }
+    try {
+      const direct = ctx.credentials
+      return direct && typeof direct.resolve === 'function' ? direct : null
     } catch { return null }
   }
 
@@ -1954,21 +1974,43 @@ function install(ctx, cfg, logger, modelBridge) {
    * 走 attachments.readImageRequest：它按目标的宽高/字节预算生成请求版本，
    * 比直接用原图更省 token，也避免超过上游体积限制。任一图读取失败就跳过
    * 该图（序列化时会写成 `[image unavailable]`），不让单张坏图废掉整轮对话。
+   *
+   * ⚠️ 取服务必须用 `ctx.get('attachments')`，**不能**写 `ctx.attachments`。
+   * install() 那条 inject 只声明了 ['llm']，而 cordis 的 ctx 是代理：读一个
+   * 没在 inject 里声明过的服务会直接抛
+   * `cannot get property "attachments" without inject`，而不是返回 undefined。
+   * 1.8.1 之前这里正是 `if (!ctx.attachments || ...)`，那一行在 try 之外，
+   * 于是**带图片的对话整轮失败**（报"处理失败·本轮运行失败"）。
+   * `ctx.get()` 是官方的机会式查找，缺失时老实返回 undefined。
+   *
+   * 另外这里每次调用现取，不在 apply 时冻结：attachments 是别的插件提供的，
+   * 装载顺序不保证它那时已经就位。
    */
   async function resolveImageUrls(messages, signal) {
     const urls = new Map()
     const refs = collectImageRefs(messages)
     if (refs.size === 0) return urls
-    if (!ctx.attachments || typeof ctx.attachments.readImageRequest !== 'function') {
+    // 先 ctx.get（官方机会式查找，缺失返回 undefined，不抛），
+    // 再退回直接读——直接读在真 cordis 代理上会抛 without inject，
+    // 但对普通对象 ctx（测试桩、少数非代理场景）是唯一可用路径。
+    // 顺序反了就会在真运行时先炸。
+    let attachments
+    try {
+      attachments = typeof ctx.get === 'function' ? ctx.get('attachments') : undefined
+    } catch { attachments = undefined }
+    if (!attachments || typeof attachments.readImageRequest !== 'function') {
+      try { attachments = ctx.attachments } catch { attachments = undefined }
+    }
+    if (!attachments || typeof attachments.readImageRequest !== 'function') {
       logger.warn?.('[codebuddy] 当前组合没有 attachments 服务，图片将被标记为不可用')
       return urls
     }
-    const limits = ctx.attachments.imageLimits || {}
+    const limits = attachments.imageLimits || {}
     const target = { width: IMAGE_MAX_DIMENSION, height: IMAGE_MAX_DIMENSION, maxBytes: IMAGE_MAX_BYTES }
     void limits
     for (const [id, ref] of refs) {
       try {
-        const request = await ctx.attachments.readImageRequest(ref, target, signal)
+        const request = await attachments.readImageRequest(ref, target, signal)
         if (!request || !request.data) continue
         const base64 = Buffer.from(request.data).toString('base64')
         urls.set(id, `data:${request.mediaType};base64,${base64}`)

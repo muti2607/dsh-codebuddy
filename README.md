@@ -259,6 +259,41 @@ MIT
 
 ## 更新日志
 
+### 1.8.2
+
+**修「处理失败 · 本轮运行失败 → cannot get property "attachments" without inject」。**
+
+只要消息里带图片，整轮对话就失败。原因在 `resolveImageUrls` 的第一行守卫：
+
+```js
+if (!ctx.attachments || typeof ctx.attachments.readImageRequest !== 'function') {
+```
+
+`install()` 那条 `inject` 只声明了 `['llm']`，而 cordis 的 `ctx` 是**代理**：
+读一个没在 inject 里声明过的服务会**直接抛错**，不是返回 `undefined`。
+这行在 `try` 之外，于是抛错直接掀掉整轮对话。
+
+改用官方的机会式查找 `ctx.get('attachments')`（缺失时老实返回 undefined），
+并保留对普通对象 ctx 的直接读兜底（测试桩走这条），顺序是 get 优先——
+反过来就会在真 cordis 上先炸。
+
+同一类隐患顺手两处：`getCredSvc` / `getCredentials` 原先写的是
+`ctx.credentials || ctx.get?.('credentials')`，前半截必抛，回退等于没写。
+它们包在 try 里所以只是静默失效（凭据服务明明在却读不到），现在也改成
+get 优先、直接读兜底。
+
+新增 `test/verify-cordis-scope.mjs`（22 组测试之一）。这个测试做过一次
+**自我纠正**，值得记一笔：第一版喂的消息形状写错了
+（`{type:'image', attachmentId}`，而 `collectImageRefs` 认的是
+`block.attachment.attachmentId`），图片路径压根没执行；而流程在
+`ensureCredential` 就先报"没有可用凭据"返回了——那种绿是假的。
+现在临时 home 里放真假账号+假凭据让流程走到图片处理，并**断言
+`attachments.readImageRequest` 确实被调用过**：这一条才是真防线，
+反向验证时它会从 1 次变 0 次。
+
+反向验证：注入裸读 `ctx.attachments`，静态检查与「图片路径确实被执行了」
+同时报红（后者显示调用 0 次，正是真事故的形态）；恢复后全绿。
+
 ### 1.8.1
 
 **修 1.8.0 的致命 bug：余额查询报 `home is not defined`。**
