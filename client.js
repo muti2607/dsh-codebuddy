@@ -416,13 +416,31 @@ window.__ModuleLoader__.load({
       }
 
       useEffect(() => {
+        let cancelled = false
+        /**
+         * 版本号只取一次就失败 → 整个页面永远显示「—」。
+         *
+         * 冷启动时宿主经常正忙着构建客户端包，第一次 /version 很容易超时；
+         * 而 /update 是用户后来手动点的，那时宿主早空闲了，所以会出现
+         * 「版本显示 —，但那行却写着已是最新」这种自相矛盾的画面。
+         * 失败就重试两次，别让一次抖动决定整页显示。
+         */
+        const loadVersion = (attempt) => {
+          apiMain('/version').then((v) => {
+            if (cancelled) return
+            if (v && v.version) setVer(v)
+            else if (attempt < 2) setTimeout(() => loadVersion(attempt + 1), 2000)
+          }).catch(() => {
+            if (!cancelled && attempt < 2) setTimeout(() => loadVersion(attempt + 1), 2000)
+          })
+        }
+        loadVersion(0)
         load()
         loadCredits()
         loadModels()
-        apiMain('/version').then(setVer).catch(() => {})
         // 心跳状态：让用户能自己看到「发不发、发了什么」，而不是只能听我们保证。
         apiMain('/telemetry').then(setTelemetry).catch(() => {})
-        return () => { if (pollRef.current) clearInterval(pollRef.current) }
+        return () => { cancelled = true; if (pollRef.current) clearInterval(pollRef.current) }
       }, [])
 
       // 轮询登录：done / failed 即停表；done 时刷新账号列表
@@ -566,7 +584,11 @@ window.__ModuleLoader__.load({
 
       const rows = accounts || []
       const activeCount = rows.filter((a) => a.enabled).length
-      const version = ver && ver.version ? ver.version : '—'
+      // 三条来源依次兜底：/version 是主来源，但它失败时 /update 的返回里
+      // 已经带了 localVersion——同一份信息不该因为一个接口抖动就显示成「—」。
+      const version = (ver && ver.version)
+        || (update && update.localVersion)
+        || '—'
 
       // ── 积分派生值 ──
       const creditRows = (credits && credits.accounts) || []

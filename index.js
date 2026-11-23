@@ -1247,7 +1247,14 @@ function installLoginRoutes(ctx, cfg, logger, modelBridge) {
                 nickname: account.nickname || '',
               }
               if (!credential) {
-                return { ...base, ok: false, error: '凭据不可用，请重新登录该账号' }
+                // 把「凭据到底缺在哪」说清楚。只丢一句「重新登录」的话，
+                // 用户遇到的是「账号明明在那儿，却说凭据不可用」，无从判断。
+                const where = hasLocalCredential(home(), account.credentialRef)
+                  ? '插件自己的凭据库里这条记录读不出来（可能已损坏）'
+                  : (getCredentials()
+                    ? '插件本地库和 DSH 的 credentials 服务里都没有这个账号的凭据'
+                    : '本机没有 credentials 服务，且插件本地库里也没有这个账号的凭据')
+                return { ...base, ok: false, error: '凭据不可用，请重新登录该账号（' + where + '）' }
               }
               const snapName = `credits-${account.id}`
               // 冷启动第一屏：先用上次落盘的结果渲染，后台再刷新。
