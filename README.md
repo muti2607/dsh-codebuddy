@@ -259,6 +259,19 @@ MIT
 
 ## 更新日志
 
+### 1.7.3
+
+**修 `/api/codebuddy/telemetry` 500。**
+
+1.7.0 在自检接口里加了 `intervalMs`，用到了 `DEFAULT_INTERVAL_MS` 却忘了从
+`src/heartbeat.js` 导入。那行在请求时才求值，于是整条接口直接 500。
+
+20 组动态测试全绿也没发现——它们没断言这个字段。
+
+补了一条**静态检查**：把 `heartbeat.js` 的所有导出和 `index.js` 的导入清单比对，
+用到了却没导入就报错。故意删掉 `DEFAULT_INTERVAL_MS` 的导入，它确实会 FAIL 并点名。
+（检查前要先剔掉 import 语句本身，否则 `readState as readTelemetryState` 会误报。）
+
 ### 1.7.2
 
 **界面不再谎报版本号。**

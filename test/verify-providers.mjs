@@ -13,6 +13,7 @@ import { apply } from '../index.js'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { writeModelPrefs, readModelPrefs } from '../src/model-prefs.js'
 
 const results = []
@@ -359,10 +360,29 @@ for (const dir of homes) {
   try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
+// ---- 静态检查：用到了却没从 src/heartbeat.js 导入的导出 ----
+// 教训：1.7.0 加了 DEFAULT_INTERVAL_MS 的使用却忘了导入，/telemetry 整条接口
+// 直接 500。动态测试没覆盖那个字段，所以 20 组测试全绿也没发现。
+{
+  // 不能用 new URL(import.meta.url).pathname：路径含中文时会被百分号编码
+  const root = path.dirname(fileURLToPath(import.meta.url))
+  const raw = fs.readFileSync(path.join(root, '..', 'index.js'), 'utf8')
+  const hb = fs.readFileSync(path.join(root, '..', 'src', 'heartbeat.js'), 'utf8')
+  const m = raw.match(/import \{([^}]*)\} from '\.\/src\/heartbeat\.js'/)
+  const imported = m ? m[1].split(',').map((x) => x.trim().split(/\s+as\s+/).pop()) : []
+  // 剔掉 import 语句本身再找"使用"，否则 `readState as readTelemetryState`
+  // 会被当成"用了 readState 却没导入"，误报。
+  const body = raw.replace(/import \{[^}]*\} from '\.\/src\/heartbeat\.js'/, '')
+  const exported = [...hb.matchAll(/export (?:const|function|class) (\w+)/g)].map((x) => x[1])
+  const missing = exported.filter((e) => new RegExp('\\b' + e + '\\b').test(body) && !imported.includes(e))
+  check('heartbeat.js 的导出无漏导（漏了会让整条路由 500）', missing.length === 0, missing.join(', '))
+}
+
 let bad = 0
 for (const { name, ok } of results) {
   if (!ok) bad += 1
   console.log((ok ? 'OK   ' : 'FAIL ') + name)
 }
+
 console.log(bad === 0 ? `\n渠道展示 ${results.length} 项全部通过` : `\n${bad}/${results.length} 项未通过`)
 process.exit(bad ? 1 : 0)

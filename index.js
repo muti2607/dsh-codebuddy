@@ -61,7 +61,7 @@ import {
   writeLocalCredential,
   deleteLocalCredential,
 } from './src/credential-store.js'
-import { scheduleHeartbeat, readState as readTelemetryState, readInstallId, DEFAULT_TELEMETRY_URL, MIN_INTERVAL_MS } from './src/heartbeat.js'
+import { scheduleHeartbeat, readState as readTelemetryState, readInstallId, DEFAULT_TELEMETRY_URL, DEFAULT_INTERVAL_MS, MIN_INTERVAL_MS } from './src/heartbeat.js'
 
 const PROVIDER = 'codebuddy'
 const DISPLAY_NAME = 'CodeBuddy (腾讯免费)'
