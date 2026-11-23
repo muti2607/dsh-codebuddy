@@ -19,19 +19,28 @@ import crypto from 'node:crypto'
 import os from 'node:os'
 
 /**
- * 这个 DSH_HOME 是不是临时目录？
+ * 这个 DSH_HOME 是不是测试用的临时目录？
  *
- * 测试用 `mkdtempSync` 造的假主目录都在系统临时目录下。不拦住的话，
- * 每跑一次测试就会生成一个新的随机安装 ID 并真的发往线上服务器——
+ * 测试用 `mkdtempSync` 造的假主目录都是 `<系统临时目录>/cb-xxx` 这种形态。
+ * 不拦住的话，每跑一次测试就会生成一个新的随机安装 ID 并真的发往线上服务器——
  * 统计里会凭空多出几个"幽灵用户"（这正是 `11e49eef` 的来历）。
  *
- * 真实用户的 DSH 主目录不会是 /tmp/xxx，所以这条在生产环境恒为 false。
+ * 注意判据必须**同时**满足两条，否则会误伤：
+ *   - 在系统临时目录下
+ *   - 目录名以 `cb-` 开头（mkdtemp 的前缀）
+ *
+ * 早先只判了第一条，结果 Windows 上 `os.tmpdir()` 是 `D:\dsh_temp`，
+ * 用户自己建的 `D:\dsh_temp\cb-rt3` 也被当成测试目录，心跳直接不发。
  */
+const TMP_PREFIXES = ['cb-', 'dsh-cb-', 'vite-', 'node-']
 export function isTempHome(home) {
   try {
     const h = path.resolve(String(home || ''))
     const tmp = path.resolve(os.tmpdir())
-    return h === tmp || h.startsWith(tmp + path.sep)
+    if (h === tmp) return true
+    if (!h.startsWith(tmp + path.sep)) return false
+    const base = path.basename(h).toLowerCase()
+    return TMP_PREFIXES.some((p) => base.startsWith(p))
   } catch {
     return false
   }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-codebuddy",
-  "version": "1.7.3",
+  "version": "1.7.4",
   "type": "module",
   "description": "把腾讯 CodeBuddy / WorkBuddy 的免费模型接进 DSH 模型选择器：内置浏览器登录（不依赖 OFM/channel-pack）、多账号轮换、积分查询与每日领取、图片输入、思考等级、自更新。",
   "keywords": [

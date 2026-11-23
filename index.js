@@ -920,7 +920,12 @@ function installUpdateRoutes(ctx, root, cfg, logger, runtime) {
       cfg,
       logger,
       home: String(cfg.dshHome || '').trim() || dshHome(),
-      version: loadedVersion,
+      // 必须从 runtime 拿：loadedVersion 是 apply() 的局部变量，这个函数在
+      // 另一层作用域，直接引用会抛 ReferenceError，被下面的 catch 吞掉，
+      // 表现就是"心跳一次都不发"且毫无日志。
+      version: runtime?.loadedVersion || (() => {
+        try { return String(readLocalVersion(moduleDir()) || '') } catch { return '' }
+      })(),
       sourceKind: (() => {
         try {
           const pd = profileDirFromEnv()
