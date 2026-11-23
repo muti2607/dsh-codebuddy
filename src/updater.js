@@ -95,11 +95,19 @@ export function readLocalVersion(moduleDir) {
 export async function fetchLatestVersion(fetchImpl = fetch, signal) {
   const timeout = AbortSignal.timeout(CHECK_TIMEOUT_MS)
   const merged = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
-  const response = await fetchImpl(`${API_BASE}/repos/${REPO}/contents/package.json`, {
+  const response = await fetchImpl(`${API_BASE}/repos/${REPO}/contents/package.json?ref=main`, {
     headers: {
       Accept: 'application/vnd.github.raw+json',
       'User-Agent': 'dsh-codebuddy-updater',
       'X-GitHub-Api-Version': '2022-11-28',
+      // 必须显式禁缓存。
+      //
+      // GitHub 的 contents API 会带 `Cache-Control: public, max-age=60, s-maxage=60`，
+      // 任何中间层（运营商缓存、公司代理、Cloudflare 边缘）都可能把旧版本留很久。
+      // 表现出来就是：明明发了新版，用户点「检查更新」却看到几天前的版本号。
+      // 这里让请求走一次强制再验证，别让缓存替我们回答。
+      'Cache-Control': 'no-cache, no-store',
+      Pragma: 'no-cache',
     },
     signal: merged,
   })
