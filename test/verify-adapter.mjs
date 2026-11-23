@@ -234,7 +234,7 @@ const fake = {
 // 用临时 dshHome 隔离：否则会读到本机真实账号池与「模型停用」偏好，
 // 测试结果就随用户操作而变（曾经因为真实偏好里停用了 5 个模型而误报）。
 const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-adapter-'))
-const dispose = apply(fake, { dshHome: tempHome })
+const dispose = apply(fake, { telemetry: false, dshHome: tempHome })
 if (!registered) fail("未注册适配器")
 else {
   const a = registered.adapter

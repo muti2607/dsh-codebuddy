@@ -16,6 +16,26 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
+import os from 'node:os'
+
+/**
+ * 这个 DSH_HOME 是不是临时目录？
+ *
+ * 测试用 `mkdtempSync` 造的假主目录都在系统临时目录下。不拦住的话，
+ * 每跑一次测试就会生成一个新的随机安装 ID 并真的发往线上服务器——
+ * 统计里会凭空多出几个"幽灵用户"（这正是 `11e49eef` 的来历）。
+ *
+ * 真实用户的 DSH 主目录不会是 /tmp/xxx，所以这条在生产环境恒为 false。
+ */
+export function isTempHome(home) {
+  try {
+    const h = path.resolve(String(home || ''))
+    const tmp = path.resolve(os.tmpdir())
+    return h === tmp || h.startsWith(tmp + path.sep)
+  } catch {
+    return false
+  }
+}
 
 /**
  * 默认上报端点。
@@ -184,7 +204,7 @@ export async function sendHeartbeat({
  *
  * 与自动更新一样用 unref 定时器：不阻止进程退出。
  */
-export function scheduleHeartbeat({ cfg, logger, home, version, sourceKind, platform, fetchImpl, delayMs = 10_000, intervalMs = DEFAULT_INTERVAL_MS }) {
+export function scheduleHeartbeat({ cfg, logger, home, version, sourceKind, platform, fetchImpl, delayMs = 10_000, intervalMs = DEFAULT_INTERVAL_MS, allowTempHome = false }) {
   // 默认开启（这是"透明"的另一半：能被审计、能被关掉，但默认工作在岗）。
   if (cfg && cfg.telemetry === false) return null
   // 显式把 telemetryUrl 写成空串 = 关闭上报。
@@ -192,6 +212,9 @@ export function scheduleHeartbeat({ cfg, logger, home, version, sourceKind, plat
   const explicit = !!cfg && Object.prototype.hasOwnProperty.call(cfg, 'telemetryUrl')
   const url = (explicit ? String(cfg.telemetryUrl || '') : String(DEFAULT_TELEMETRY_URL || '')).trim()
   if (!url) return null
+  // 临时主目录一律不上报：那是测试在跑，不是真实用户。
+  // 只有心跳自身的测试会显式传 allowTempHome 打开，它们本来就该发。
+  if (!allowTempHome && isTempHome(home)) return null
 
   const run = async () => {
     try {

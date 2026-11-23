@@ -167,7 +167,7 @@ const jsonResponse = (obj, status = 200) =>
   }
   const realFetch = globalThis.fetch
   try {
-    apply(fake, { dshHome: home, autoOpenBrowser: false })
+    apply(fake, { telemetry: false, dshHome: home, autoOpenBrowser: false })
     if (!route) fail('/api/cb 登录路由未注册: ' + routes.map((r) => r.path).join(','))
     if (!routes.some((r) => r.path === '/api/codebuddy')) fail('更新路由必须仍在（两条路由不能互相遮蔽）')
     globalThis.fetch = fetcher
@@ -259,7 +259,7 @@ const jsonResponse = (obj, status = 200) =>
     },
   }
   try {
-    apply(fake, { dshHome: home, autoOpenBrowser: false })
+    apply(fake, { telemetry: false, dshHome: home, autoOpenBrowser: false })
     if (!route) fail('/api/cb 在缺少 credentials 时未注册（路由被凭据依赖拖死）: ' + routes.map((r) => r.path).join(','))
     if (!routes.some((r) => r.path === '/api/codebuddy')) fail('更新路由应在（只依赖 webServer）')
     // /models 不碰凭据，缺 credentials 也必须能应答

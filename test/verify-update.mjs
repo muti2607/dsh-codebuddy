@@ -62,7 +62,7 @@ async function runUpdate(spec, script) {
       webServer: { register(r) { routes.push(r); if (r.path === '/api/codebuddy') route = r; return () => {} } },
       inject(deps, cb) { cb(fake); return () => {} },
     }
-    apply(fake, {})
+    apply(fake, { telemetry: false })
     if (!route) throw new Error('未注册 /api/codebuddy 更新路由，实际: ' + routes.map((r) => r.path).join(','))
     const call = async (method, url) => {
       let status = 0, out = ''
@@ -146,7 +146,7 @@ async function runUpdate(spec, script) {
   }
   process.env.DSH_PROFILE_DIR = dir
   try {
-    apply(fake, {})
+    apply(fake, { telemetry: false })
     if (!route) fail('/api/codebuddy 更新路由未注册')
     let out = ''
     await route.handler({ method: 'POST', url: '/api/codebuddy/update' }, { writeHead() {}, end(t) { out = String(t) } })

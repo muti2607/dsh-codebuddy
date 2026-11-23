@@ -89,6 +89,24 @@ function readEvents() {
 
 function dayMs(d) { return Date.parse(d + 'T00:00:00Z') }
 
+/** 版本号比较：1.10.0 > 1.9.9（按数字段比，不能按字符串比）。 */
+function cmpVersion(a, b) {
+  const pa = String(a).split('.').map((x) => parseInt(x.replace(/\D/g, ''), 10) || 0)
+  const pb = String(b).split('.').map((x) => parseInt(x.replace(/\D/g, ''), 10) || 0)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0)
+    if (d) return d
+  }
+  return 0
+}
+
+/** 一组版本号里最新的那个，空集合返回 ''。 */
+function latestVersion(versions) {
+  const vals = [...versions].filter(Boolean)
+  if (!vals.length) return ''
+  return vals.sort((a, b) => cmpVersion(b, a))[0]
+}
+
 /**
  * 去重键：安装 ID + 小时。
  *
@@ -145,7 +163,9 @@ function summarize(events) {
   for (const r of installs.values()) {
     bump(byPlatform, r.platform)
     bump(bySource, r.source)
-    for (const v of r.versions) bump(byVersion, v)
+    // 一台机器只算它当前最新的版本：升级过的不该在旧版本里继续占一格
+    const newest = latestVersion(r.versions)
+    if (newest) bump(byVersion, newest)
   }
 
   // 最近 14 天的每日活跃（按上报去重后的天）
@@ -245,14 +265,7 @@ function renderDists(data) {
     .map(([k, n]) => bar(PLATFORM_LABEL[k] || k, n, total, 'var(--c1)')).join('') || '<p class="empty">暂无数据</p>'
   const sourceRows = Object.entries(data.bySource).sort((a, b) => b[1] - a[1])
     .map(([k, n]) => bar(SOURCE_LABEL[k] || k, n, total, 'var(--c2)')).join('') || '<p class="empty">暂无数据</p>'
-  const versionRows = Object.entries(data.byVersion).sort((a, b) => {
-    const pa = a[0].split('.').map(Number), pb = b[0].split('.').map(Number)
-    for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-      const d = (pb[i] || 0) - (pa[i] || 0)
-      if (d) return d
-    }
-    return 0
-  }).map(([k, n]) => bar('v' + k, n, total, 'var(--c3)')).join('') || '<p class="empty">暂无数据</p>'
+  const versionRows = Object.entries(data.byVersion).sort((a, b) => cmpVersion(b[0], a[0])).map(([k, n]) => bar('v' + k, n, total, 'var(--c3)')).join('') || '<p class="empty">暂无数据</p>'
   return `<div class="panel"><h2>平台分布</h2>${platformRows}</div>
   <div class="panel"><h2>安装来源</h2>${sourceRows}</div>
   <div class="panel"><h2>版本分布</h2>${versionRows}</div>`
@@ -264,7 +277,7 @@ function renderTable(data) {
         <td class="mono">${esc(r.installId)}…</td>
         <td>${esc(PLATFORM_LABEL[r.platform] || r.platform)}</td>
         <td>${esc(SOURCE_LABEL[r.source] || r.source)}</td>
-        <td class="mono">${esc((r.versions || []).join(', ') || '—')}</td>
+        <td class="mono">${esc(latestVersion(r.versions || []) || '—')}</td>
         <td class="num">${r.days}</td>
         <td class="mono dim">${esc(r.lastDay || '—')}</td>
       </tr>`).join('')

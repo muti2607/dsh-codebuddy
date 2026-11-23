@@ -92,7 +92,7 @@ const root = {
   },
 }
 
-const cleanup = apply(root, { dshHome: tmpHome, autoUpdate: false })
+const cleanup = apply(root, { telemetry: false, dshHome: tmpHome, autoUpdate: false })
 log('注册的路由数=' + registrations.length)
 for (const r of registrations) log('  ' + r.kind + ' ' + r.path)
 

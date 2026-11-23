@@ -94,7 +94,7 @@ function boot({ config = {}, models = REMOTE_MODELS } = {}) {
     inject(_deps, cb) { cb(scoped) },
   }
 
-  const dispose = apply(root, { autoUpdate: false, dshHome: home, ...config })
+  const dispose = apply(root, { telemetry: false, autoUpdate: false, dshHome: home, ...config })
 
   /** 直接调某个前缀路由的 handler，绕过 HTTP 栈。 */
   async function call(pathname, method = 'GET', payload) {

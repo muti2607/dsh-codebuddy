@@ -50,7 +50,7 @@ function makeCtx() {
 async function runCase(accountCount, responses) {
   const home = makeHome(accountCount)
   const fake = makeCtx()
-  apply(fake, { dshHome: home })
+  apply(fake, { telemetry: false, dshHome: home })
 
   const usedTokens = []
   const realFetch = globalThis.fetch
@@ -112,7 +112,7 @@ async function runCase(accountCount, responses) {
 {
   const home = makeHome(1)
   const fake = makeCtx()
-  apply(fake, { dshHome: home })
+  apply(fake, { telemetry: false, dshHome: home })
   let first = true
   const chatAttempts = []
   const realFetch = globalThis.fetch
@@ -167,7 +167,7 @@ async function runCase(accountCount, responses) {
 {
   const home = makeHome(1)
   const fake = makeCtx()
-  apply(fake, { dshHome: home })
+  apply(fake, { telemetry: false, dshHome: home })
   let call = 0
   const realFetch = globalThis.fetch
   globalThis.fetch = async (url) => {
@@ -201,7 +201,7 @@ async function runCase(accountCount, responses) {
 {
   const home = makeHome(1)
   const fake = makeCtx()
-  apply(fake, { dshHome: home })
+  apply(fake, { telemetry: false, dshHome: home })
   let call = 0
   const bodies = []
   const realFetch = globalThis.fetch
@@ -254,7 +254,7 @@ async function runCase(accountCount, responses) {
 {
   const home = makeHome(1)
   const fake = makeCtx()
-  apply(fake, { dshHome: home })
+  apply(fake, { telemetry: false, dshHome: home })
   let call = 0
   const realFetch = globalThis.fetch
   const FULL_TOOL = 'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"t1","function":{"name":"pwsh","arguments":"{\\"command\\":\\"echo hi\\"}"}}]},"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n'
@@ -300,7 +300,7 @@ async function runCase(accountCount, responses) {
 {
   const home = makeHome(1)
   const fake = makeCtx()
-  apply(fake, { dshHome: home })
+  apply(fake, { telemetry: false, dshHome: home })
   let call = 0
   const realFetch = globalThis.fetch
   globalThis.fetch = async (url) => {

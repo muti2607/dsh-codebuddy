@@ -11,6 +11,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   DEFAULT_TELEMETRY_URL,
+  isTempHome,
   readInstallId,
   buildPayload,
   planSend,
@@ -163,7 +164,7 @@ const ok = (m) => console.log('  ok ' + m)
 {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb3-'))
   try {
-    const t = scheduleHeartbeat({
+    const t = scheduleHeartbeat({ allowTempHome: true,
       cfg: { telemetry: false, telemetryUrl: 'http://127.0.0.1:9/x' },
       logger: {},
       home,
@@ -200,7 +201,7 @@ const ok = (m) => console.log('  ok ' + m)
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb9-'))
   try {
     // 显式空串 = 关闭，绝不能回落默认端点
-    const t1 = scheduleHeartbeat({
+    const t1 = scheduleHeartbeat({ allowTempHome: true,
       cfg: { telemetryUrl: '' }, logger: { warn() {} }, home,
       version: '1.6.4', sourceKind: 'git', platform: 'linux', delayMs: 1000,
     })
@@ -213,7 +214,7 @@ const ok = (m) => console.log('  ok ' + m)
       sent.push({ url: String(url), body: JSON.parse(init.body) })
       return new Response('{}', { status: 202 })
     }
-    const t2 = scheduleHeartbeat({
+    const t2 = scheduleHeartbeat({ allowTempHome: true,
       cfg: {}, logger: { warn() {} }, home,
       version: '1.6.4', sourceKind: 'git', platform: 'linux',
       fetchImpl: fakeFetch, delayMs: 1000,
@@ -235,7 +236,7 @@ const ok = (m) => console.log('  ok ' + m)
       sent.push({ url, body: JSON.parse(init.body) })
       return new Response('', { status: 202 })
     }
-    const timer = scheduleHeartbeat({
+    const timer = scheduleHeartbeat({ allowTempHome: true,
       cfg: { telemetryUrl: 'http://127.0.0.1:9/hb', dshHome: home },
       logger: {},
       home,
@@ -270,7 +271,7 @@ const ok = (m) => console.log('  ok ' + m)
     writeState(home, { day: y, firstAt: Date.now() - 172800000, lastAt: Date.now() - 86400000, count: 5, version: '1.6.0' })
 
     // 第一次失败：应该试一次，并记一条警告
-    let t = scheduleHeartbeat({
+    let t = scheduleHeartbeat({ allowTempHome: true,
       cfg: { telemetryUrl: 'http://127.0.0.1:1/hb' }, logger, home,
       version: '1.6.0', sourceKind: 'git', platform: 'linux', delayMs: 1000,
     })
@@ -283,7 +284,7 @@ const ok = (m) => console.log('  ok ' + m)
 
     // 立刻再重启一次：退避期内不得再试、不得再刷日志
     const before = logs.length
-    t = scheduleHeartbeat({
+    t = scheduleHeartbeat({ allowTempHome: true,
       cfg: { telemetryUrl: 'http://127.0.0.1:1/hb' }, logger, home,
       version: '1.6.0', sourceKind: 'git', platform: 'linux', delayMs: 1000,
     })
@@ -312,7 +313,7 @@ const ok = (m) => console.log('  ok ' + m)
     writeState(home, { ...readState(home), failAt: 0, failCount: 0 })
     const sent = []
     const fakeFetch = async (u, i) => { sent.push(JSON.parse(i.body)); return new Response('', { status: 202 }) }
-    t = scheduleHeartbeat({
+    t = scheduleHeartbeat({ allowTempHome: true,
       cfg: { telemetryUrl: 'http://127.0.0.1:9/hb' }, logger, home,
       version: '1.6.0', sourceKind: 'git', platform: 'linux', fetchImpl: fakeFetch, delayMs: 1000,
     })
@@ -336,7 +337,7 @@ const ok = (m) => console.log('  ok ' + m)
       sent.push(JSON.parse(init.body))
       return new Response('{}', { status: 202 })
     }
-    const h = scheduleHeartbeat({
+    const h = scheduleHeartbeat({ allowTempHome: true,
       cfg: { telemetryUrl: 'http://127.0.0.1:9/hb' },
       logger: { warn() {} }, home,
       version: '1.7.0', sourceKind: 'git', platform: 'win32',
@@ -354,6 +355,25 @@ const ok = (m) => console.log('  ok ' + m)
     await new Promise((r) => setTimeout(r, 700))
     if (sent.length !== atStop) fail('stop() 之后不应再发，实际又发了 ' + (sent.length - atStop) + ' 次')
     ok('周期上报生效，且 stop() 能彻底停掉（共 ' + atStop + ' 次）')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+}
+
+// ---- 13. 临时主目录不得上报（测试污染线上的防线）----
+// 教训：verify-* 里那些 apply() 用的是 mkdtemp 造的假 DSH_HOME，每个都是
+// 全新的随机安装 ID。曾因此往线上灌进了不存在的"幽灵用户"。
+{
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb13-'))
+  try {
+    const h = scheduleHeartbeat({
+      cfg: {}, logger: { warn() {} }, home,
+      version: '1.7.0', sourceKind: 'git', platform: 'win32',
+      fetchImpl: async () => { fail('临时主目录竟然发出了请求'); return new Response('', { status: 202 }) },
+      delayMs: 100, intervalMs: 1000,
+    })
+    if (h !== null) { h.stop(); fail('临时主目录应完全不建立定时器') }
+    else ok('临时主目录不建立定时器，不会污染线上统计')
+    if (!isTempHome(home)) fail('isTempHome 应认出临时目录')
+    if (isTempHome('C:/Users/someone/.dsh')) fail('isTempHome 不应把真实主目录当临时目录')
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 }
 

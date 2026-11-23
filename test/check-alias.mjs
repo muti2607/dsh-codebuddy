@@ -13,7 +13,7 @@ const fake = {
   inject(d, cb) { cb(fake); return () => {} },
   get(n) { return fake[n] },
 }
-apply(fake, { dshHome: 'D:/__none__' })
+apply(fake, { telemetry: false, dshHome: 'D:/__none__' })
 
 const all = regs.flatMap((r) => r.providers)
 console.log('注册的 provider:', JSON.stringify(all))

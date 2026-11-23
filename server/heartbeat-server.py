@@ -196,8 +196,9 @@ def summarize(events):
     for r in installs.values():
         by_platform[r['platform']] = by_platform.get(r['platform'], 0) + 1
         by_source[r['source']] = by_source.get(r['source'], 0) + 1
-        for v in r['versions']:
-            by_version[v] = by_version.get(v, 0) + 1
+        newest = latest_version(r['versions'])
+        if newest:
+            by_version[newest] = by_version.get(newest, 0) + 1
 
     daily = []
     for i in range(13, -1, -1):
@@ -219,7 +220,8 @@ def summarize(events):
             'days': len(r['days']),
             'platform': r['platform'],
             'source': r['source'],
-            'versions': sorted(r['versions']),
+            # 只报最新版本：一行里堆 "1.6.5, 1.7.0" 既难读，也看不出他现在跑的是哪个
+            'versions': ([latest_version(r['versions'])] if latest_version(r['versions']) else []),
         })
     rows.sort(key=lambda x: str(x['lastDay'] or ''), reverse=True)
 
@@ -377,6 +379,14 @@ def render_footer(data):
         '同一安装每天最多上报一次；服务端做同样去重。数据不含账号、token、路径、主机名或 IP。<br>'
         f'原始事件：<code>{esc(FILE)}</code>'
     )
+
+
+def latest_version(versions):
+    """一组版本号里最新的那个。空集合返回 ''。"""
+    vals = [v for v in versions if v]
+    if not vals:
+        return ''
+    return max(vals, key=version_key)
 
 
 def page_parts(data):

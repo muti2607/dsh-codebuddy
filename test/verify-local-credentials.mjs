@@ -116,7 +116,7 @@ const fail = (m) => { bad++; log('  FAIL ' + m) }
       },
     }
 
-    const cleanup = apply(root, { dshHome: tmpHome, autoUpdate: false, telemetry: false })
+    const cleanup = apply(root, { telemetry: false, dshHome: tmpHome, autoUpdate: false, telemetry: false })
 
     const server = http.createServer(async (req, res) => {
       for (const spec of registrations) {

@@ -53,7 +53,7 @@ const scoped = {
   },
 }
 const root = { logger: { info() {}, warn() {}, error() {} }, inject(_d, cb) { cb(scoped) } }
-apply(root, { autoUpdate: false })
+apply(root, { telemetry: false, autoUpdate: false })
 
 const results = []
 const check = (name, ok, detail) => {
