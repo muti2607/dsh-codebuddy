@@ -197,7 +197,21 @@ function sparkline(daily) {
   </svg>`
 }
 
-function page(data, authed) {
+function renderCards(data) {
+  return `<div class="card"><div class="k">总安装数</div><div class="v">${data.totalInstalls}</div><div class="note">按安装 ID 去重</div></div>
+  <div class="card"><div class="k">今日活跃</div><div class="v">${data.activeToday}</div><div class="note">今天有上报</div></div>
+  <div class="card"><div class="k">7 日活跃</div><div class="v">${data.active7d}</div><div class="note">近 7 天内上报过</div></div>
+  <div class="card"><div class="k">30 日活跃</div><div class="v">${data.active30d}</div><div class="note">近 30 天内上报过</div></div>`
+}
+
+function renderSpark(data) {
+  const daily = data.daily || []
+  return `<h2>近 14 天活跃</h2>
+  ${sparkline(daily)}
+  <div class="days"><span>${esc(daily[0]?.day || '')}</span><span>${esc(daily[daily.length - 1]?.day || '')}</span></div>`
+}
+
+function renderDists(data) {
   const total = data.totalInstalls
   const platformRows = Object.entries(data.byPlatform).sort((a, b) => b[1] - a[1])
     .map(([k, n]) => bar(PLATFORM_LABEL[k] || k, n, total, 'var(--c1)')).join('') || '<p class="empty">暂无数据</p>'
@@ -211,7 +225,12 @@ function page(data, authed) {
     }
     return 0
   }).map(([k, n]) => bar('v' + k, n, total, 'var(--c3)')).join('') || '<p class="empty">暂无数据</p>'
+  return `<div class="panel"><h2>平台分布</h2>${platformRows}</div>
+  <div class="panel"><h2>安装来源</h2>${sourceRows}</div>
+  <div class="panel"><h2>版本分布</h2>${versionRows}</div>`
+}
 
+function renderTable(data) {
   const rows = data.installs.length
     ? data.installs.map((r) => `<tr>
         <td class="mono">${esc(r.installId)}…</td>
@@ -222,6 +241,35 @@ function page(data, authed) {
         <td class="mono dim">${esc(r.lastDay || '—')}</td>
       </tr>`).join('')
     : '<tr><td colspan="6" class="empty">还没有任何上报</td></tr>'
+  return `<h2>安装明细</h2>
+  <table>
+    <thead><tr><th>安装 ID</th><th>平台</th><th>来源</th><th>版本</th><th>活跃天数</th><th>最近上报</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`
+}
+
+function renderFooter(data) {
+  return `共收到 ${data.totalEvents} 条心跳 &nbsp;·&nbsp; 最近一次 ${esc(data.latestReportDay || '—')}<br>
+  同一安装每天最多上报一次；服务端做同样去重。数据不含账号、token、路径、主机名或 IP。<br>
+  原始事件：<code>${esc(FILE)}</code>`
+}
+
+/**
+ * 每个可刷新区块的 innerHTML。手动刷新和自动刷新都走这里，
+ * 渲染逻辑只留在服务端一份，前端不做二次拼装。
+ */
+function pageParts(data) {
+  return {
+    'sec-cards': renderCards(data),
+    'sec-spark': renderSpark(data),
+    'sec-dists': renderDists(data),
+    'sec-table': renderTable(data),
+    'sec-footer': renderFooter(data),
+  }
+}
+
+function page(data, authed) {
+  const parts = pageParts(data)
 
   return `<!doctype html>
 <html lang="zh-CN"><head>
@@ -249,8 +297,21 @@ header{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;
 h1{margin:0;font-size:26px;font-weight:650;letter-spacing:-.02em}
 h1 span{color:var(--accent)}
 .sub{margin:7px 0 0;color:var(--dim);font-size:13.5px}
-.live{display:inline-flex;align-items:center;gap:7px;color:var(--dim);font-size:12.5px;
-  border:1px solid var(--line);background:var(--panel);padding:7px 13px;border-radius:999px}
+.tools{display:flex;align-items:center;gap:9px;flex-wrap:wrap}
+.toolbtn,.live{
+  display:inline-flex;align-items:center;gap:7px;color:var(--dim);font-size:12.5px;
+  font-family:inherit;line-height:1;cursor:pointer;
+  border:1px solid var(--line);background:var(--panel);padding:8px 13px;border-radius:999px;
+  transition:border-color .15s,color .15s,background .15s;
+}
+.toolbtn:hover,.live:hover{border-color:var(--accent);color:var(--fg)}
+.toolbtn:active{transform:translateY(1px)}
+.spinicon{display:inline-block;font-size:13px}
+.spinicon.spin{animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.stamp{color:var(--dim2);font-size:11.5px;font-variant-numeric:tabular-nums}
+.live.off{color:var(--dim2)}
+.live.off .pulse{background:#8a94a3;box-shadow:none;animation:none}
 .pulse{width:7px;height:7px;border-radius:50%;background:#38d39f;box-shadow:0 0 0 0 rgba(56,211,159,.55);animation:p 2.2s infinite}
 @keyframes p{70%{box-shadow:0 0 0 7px rgba(56,211,159,0)}100%{box-shadow:0 0 0 0 rgba(56,211,159,0)}}
 .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:13px;margin-bottom:13px}
@@ -297,45 +358,111 @@ footer code{background:var(--panel2);padding:2px 6px;border-radius:5px;font-size
     <h1>dsh-codebuddy <span>·</span> 使用统计</h1>
     <p class="sub">匿名心跳汇总 &nbsp;·&nbsp; 只含版本、平台、安装来源与日期，不含任何身份信息</p>
   </div>
-  <div class="live"><span class="pulse"></span>自动刷新 30s</div>
+  <div class="tools">
+    <button type="button" id="cb_refresh" class="toolbtn" title="立即拉取最新数据">
+      <span id="cb_spin" class="spinicon">⟳</span>刷新
+    </button>
+    <button type="button" id="cb_auto" class="live" title="点击暂停/继续自动刷新">
+      <span class="pulse"></span><span class="cb_autolabel">自动刷新 30s</span>
+    </button>
+    <span id="cb_stamp" class="stamp"></span>
+  </div>
 </header>
 
-<div class="cards">
-  <div class="card"><div class="k">总安装数</div><div class="v">${data.totalInstalls}</div><div class="note">按安装 ID 去重</div></div>
-  <div class="card"><div class="k">今日活跃</div><div class="v">${data.activeToday}</div><div class="note">今天有上报</div></div>
-  <div class="card"><div class="k">7 日活跃</div><div class="v">${data.active7d}</div><div class="note">近 7 天内上报过</div></div>
-  <div class="card"><div class="k">30 日活跃</div><div class="v">${data.active30d}</div><div class="note">近 30 天内上报过</div></div>
+<div class="cards" id="sec-cards">${parts['sec-cards']}</div>
+
+<div class="panel" id="sec-spark">
+${parts['sec-spark']}
 </div>
 
-<div class="panel">
-  <h2>近 14 天活跃</h2>
-  ${sparkline(data.daily)}
-  <div class="days"><span>${esc(data.daily[0]?.day || '')}</span><span>${esc(data.daily[data.daily.length - 1]?.day || '')}</span></div>
+<div class="grid3" id="sec-dists">
+${parts['sec-dists']}
 </div>
 
-<div class="grid3">
-  <div class="panel"><h2>平台分布</h2>${platformRows}</div>
-  <div class="panel"><h2>安装来源</h2>${sourceRows}</div>
-  <div class="panel"><h2>版本分布</h2>${versionRows}</div>
+<div class="panel" id="sec-table">
+${parts['sec-table']}
 </div>
 
-<div class="panel">
-  <h2>安装明细</h2>
-  <table>
-    <thead><tr><th>安装 ID</th><th>平台</th><th>来源</th><th>版本</th><th>活跃天数</th><th>最近上报</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-</div>
-
-<footer>
-  共收到 ${data.totalEvents} 条心跳 &nbsp;·&nbsp; 最近一次 ${esc(data.latestReportDay || '—')}<br>
-  同一安装每天最多上报一次；服务端做同样去重。数据不含账号、token、路径、主机名或 IP。<br>
-  原始事件：<code>${esc(FILE)}</code>
+<footer id="sec-footer">
+${parts['sec-footer']}
 </footer>
 </div>
-<script>setTimeout(()=>location.reload(),30000)</script>
+<script>${PAGE_JS}</script>
 </body></html>`
 }
+
+/** 页面脚本：手动刷新 + 自动刷新开关。与 Python 版逐字一致。 */
+const PAGE_JS = `
+(function () {
+  var btn = document.getElementById('cb_refresh')
+  var spin = document.getElementById('cb_spin')
+  var auto = document.getElementById('cb_auto')
+  var stamp = document.getElementById('cb_stamp')
+  var label = auto ? auto.querySelector('.cb_autolabel') : null
+  var busy = false, timer = null, autoOn = true
+
+  function pad(n) { return n < 10 ? '0' + n : '' + n }
+  function hhmmss(d) { return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) }
+
+  function apply(parts) {
+    for (var k in parts) {
+      if (!Object.prototype.hasOwnProperty.call(parts, k)) continue
+      var el = document.getElementById(k)
+      if (el) el.innerHTML = parts[k]
+    }
+  }
+
+  async function refresh(silent) {
+    if (busy) return
+    busy = true
+    if (!silent && spin) spin.classList.add('spin')
+    try {
+      var r = await fetch('/parts', { cache: 'no-store', credentials: 'same-origin' })
+      if (r.status === 403) { location.reload(); return }
+      var j = await r.json()
+      if (j && j.ok && j.parts) {
+        apply(j.parts)
+        if (stamp) stamp.textContent = '刷新于 ' + hhmmss(new Date())
+      } else {
+        if (stamp) stamp.textContent = '刷新失败'
+      }
+    } catch (e) {
+      if (stamp) stamp.textContent = '刷新失败（网络）'
+    } finally {
+      busy = false
+      if (!silent && spin) spin.classList.remove('spin')
+    }
+  }
+
+  function schedule() {
+    if (timer) { clearInterval(timer); timer = null }
+    if (autoOn) timer = setInterval(function () { refresh(true) }, 30000)
+  }
+
+  if (btn) btn.addEventListener('click', function () { refresh(false) })
+
+  if (auto) {
+    auto.addEventListener('click', function () {
+      autoOn = !autoOn
+      auto.classList.toggle('off', !autoOn)
+      if (label) label.textContent = autoOn ? '自动刷新 30s' : '自动刷新已关'
+      schedule()
+    })
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      if (timer) { clearInterval(timer); timer = null }
+    } else {
+      refresh(true)
+      schedule()
+    }
+  })
+
+  if (stamp) stamp.textContent = '刷新于 ' + hhmmss(new Date())
+  schedule()
+})()
+`
 
 function loginPage(error) {
   return `<!doctype html><html lang="zh-CN"><head>
@@ -431,14 +558,17 @@ const server = http.createServer(async (req, res) => {
   // ---- 仪表盘 / 数据 ----
   const wantsStats = url.pathname === '/stats' || url.pathname === '/api/stats'
   const wantsPage = url.pathname === '/' || url.pathname === '/index.html'
+  const wantsParts = url.pathname === '/parts'
 
-  if (wantsStats || wantsPage) {
+  if (wantsStats || wantsPage || wantsParts) {
     if (!authed) {
-      if (wantsStats) return json(403, { ok: false, error: 'forbidden' })
+      if (wantsStats || wantsParts) return json(403, { ok: false, error: 'forbidden' })
       return html(200, loginPage(given ? '口令不对' : ''))
     }
     const data = summarize(readEvents())
     if (wantsStats) return json(200, data)
+    // 局部刷新：只回渲染好的 HTML 片段，前端直接换 innerHTML
+    if (wantsParts) return json(200, { ok: true, parts: pageParts(data) })
     // 口令正确时种一个 cookie，之后刷新就不用再带 ?token=
     const headers = {}
     if (ADMIN_TOKEN && queryToken === ADMIN_TOKEN) {

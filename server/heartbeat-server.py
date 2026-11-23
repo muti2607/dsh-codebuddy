@@ -259,7 +259,31 @@ def version_key(v):
     return parts
 
 
-def page(data):
+def render_cards(data):
+    return (
+        '<div class="card"><div class="k">总安装数</div>'
+        f'<div class="v">{data["totalInstalls"]}</div><div class="note">按安装 ID 去重</div></div>'
+        '<div class="card"><div class="k">今日活跃</div>'
+        f'<div class="v">{data["activeToday"]}</div><div class="note">今天有上报</div></div>'
+        '<div class="card"><div class="k">7 日活跃</div>'
+        f'<div class="v">{data["active7d"]}</div><div class="note">近 7 天内上报过</div></div>'
+        '<div class="card"><div class="k">30 日活跃</div>'
+        f'<div class="v">{data["active30d"]}</div><div class="note">近 30 天内上报过</div></div>'
+    )
+
+
+def render_spark(data):
+    daily = data['daily']
+    first_day = daily[0]['day'] if daily else ''
+    last_day = daily[-1]['day'] if daily else ''
+    return (
+        '<h2>近 14 天活跃</h2>'
+        + sparkline(daily)
+        + f'<div class="days"><span>{esc(first_day)}</span><span>{esc(last_day)}</span></div>'
+    )
+
+
+def render_dists(data):
     total = data['totalInstalls']
 
     def rows_for(mapping, labels, accent):
@@ -270,10 +294,17 @@ def page(data):
 
     platform_rows = rows_for(data['byPlatform'], PLATFORM_LABEL, 'var(--c1)')
     source_rows = rows_for(data['bySource'], SOURCE_LABEL, 'var(--c2)')
-
     vers = sorted(data['byVersion'].items(), key=lambda kv: version_key(kv[0]), reverse=True)
     version_rows = ''.join(bar('v' + k, n, total, 'var(--c3)') for k, n in vers) or '<p class="empty">暂无数据</p>'
 
+    return (
+        f'<div class="panel"><h2>平台分布</h2>{platform_rows}</div>'
+        f'<div class="panel"><h2>安装来源</h2>{source_rows}</div>'
+        f'<div class="panel"><h2>版本分布</h2>{version_rows}</div>'
+    )
+
+
+def render_table(data):
     if data['installs']:
         trs = []
         for r in data['installs']:
@@ -290,11 +321,42 @@ def page(data):
         trs = ''.join(trs)
     else:
         trs = '<tr><td colspan="6" class="empty">还没有任何上报</td></tr>'
+    return (
+        '<h2>安装明细</h2>'
+        '<table>'
+        '<thead><tr><th>安装 ID</th><th>平台</th><th>来源</th><th>版本</th>'
+        '<th>活跃天数</th><th>最近上报</th></tr></thead>'
+        f'<tbody>{trs}</tbody>'
+        '</table>'
+    )
 
-    daily = data['daily']
-    first_day = daily[0]['day'] if daily else ''
-    last_day = daily[-1]['day'] if daily else ''
 
+def render_footer(data):
+    return (
+        f'共收到 {data["totalEvents"]} 条心跳 &nbsp;·&nbsp; '
+        f'最近一次 {esc(data["latestReportDay"] or "—")}<br>'
+        '同一安装每天最多上报一次；服务端做同样去重。数据不含账号、token、路径、主机名或 IP。<br>'
+        f'原始事件：<code>{esc(FILE)}</code>'
+    )
+
+
+def page_parts(data):
+    """
+    页面里每个可刷新区块的 innerHTML。
+    手动刷新和 30 秒自动刷新都走这里——渲染逻辑只留在服务端一份，
+    前端不需要重新实现一遍数字/图表/表格的拼装。
+    """
+    return {
+        'sec-cards': render_cards(data),
+        'sec-spark': render_spark(data),
+        'sec-dists': render_dists(data),
+        'sec-table': render_table(data),
+        'sec-footer': render_footer(data),
+    }
+
+
+def page(data):
+    parts = page_parts(data)
     return f'''<!doctype html>
 <html lang="zh-CN"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -321,8 +383,21 @@ header{{display:flex;align-items:flex-end;justify-content:space-between;gap:16px
 h1{{margin:0;font-size:26px;font-weight:650;letter-spacing:-.02em}}
 h1 span{{color:var(--accent)}}
 .sub{{margin:7px 0 0;color:var(--dim);font-size:13.5px}}
-.live{{display:inline-flex;align-items:center;gap:7px;color:var(--dim);font-size:12.5px;
-  border:1px solid var(--line);background:var(--panel);padding:7px 13px;border-radius:999px}}
+.tools{{display:flex;align-items:center;gap:9px;flex-wrap:wrap}}
+.toolbtn,.live{{
+  display:inline-flex;align-items:center;gap:7px;color:var(--dim);font-size:12.5px;
+  font-family:inherit;line-height:1;cursor:pointer;
+  border:1px solid var(--line);background:var(--panel);padding:8px 13px;border-radius:999px;
+  transition:border-color .15s,color .15s,background .15s;
+}}
+.toolbtn:hover,.live:hover{{border-color:var(--accent);color:var(--fg)}}
+.toolbtn:active{{transform:translateY(1px)}}
+.spinicon{{display:inline-block;font-size:13px}}
+.spinicon.spin{{animation:spin .8s linear infinite}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+.stamp{{color:var(--dim2);font-size:11.5px;font-variant-numeric:tabular-nums}}
+.live.off{{color:var(--dim2)}}
+.live.off .pulse{{background:#8a94a3;box-shadow:none;animation:none}}
 .pulse{{width:7px;height:7px;border-radius:50%;background:#38d39f;box-shadow:0 0 0 0 rgba(56,211,159,.55);animation:p 2.2s infinite}}
 @keyframes p{{70%{{box-shadow:0 0 0 7px rgba(56,211,159,0)}}100%{{box-shadow:0 0 0 0 rgba(56,211,159,0)}}}}
 .cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(168px,1fr));gap:13px;margin-bottom:13px}}
@@ -369,44 +444,115 @@ footer code{{background:var(--panel2);padding:2px 6px;border-radius:5px;font-siz
     <h1>dsh-codebuddy <span>·</span> 使用统计</h1>
     <p class="sub">匿名心跳汇总 &nbsp;·&nbsp; 只含版本、平台、安装来源与日期，不含任何身份信息</p>
   </div>
-  <div class="live"><span class="pulse"></span>自动刷新 30s</div>
+  <div class="tools">
+    <button type="button" id="cb_refresh" class="toolbtn" title="立即拉取最新数据">
+      <span id="cb_spin" class="spinicon">⟳</span>刷新
+    </button>
+    <button type="button" id="cb_auto" class="live" title="点击暂停/继续自动刷新">
+      <span class="pulse"></span><span class="cb_autolabel">自动刷新 30s</span>
+    </button>
+    <span id="cb_stamp" class="stamp"></span>
+  </div>
 </header>
 
-<div class="cards">
-  <div class="card"><div class="k">总安装数</div><div class="v">{data['totalInstalls']}</div><div class="note">按安装 ID 去重</div></div>
-  <div class="card"><div class="k">今日活跃</div><div class="v">{data['activeToday']}</div><div class="note">今天有上报</div></div>
-  <div class="card"><div class="k">7 日活跃</div><div class="v">{data['active7d']}</div><div class="note">近 7 天内上报过</div></div>
-  <div class="card"><div class="k">30 日活跃</div><div class="v">{data['active30d']}</div><div class="note">近 30 天内上报过</div></div>
+<div class="cards" id="sec-cards">{parts['sec-cards']}</div>
+
+<div class="panel" id="sec-spark">
+{parts['sec-spark']}
 </div>
 
-<div class="panel">
-  <h2>近 14 天活跃</h2>
-  {sparkline(daily)}
-  <div class="days"><span>{esc(first_day)}</span><span>{esc(last_day)}</span></div>
+<div class="grid3" id="sec-dists">
+{parts['sec-dists']}
 </div>
 
-<div class="grid3">
-  <div class="panel"><h2>平台分布</h2>{platform_rows}</div>
-  <div class="panel"><h2>安装来源</h2>{source_rows}</div>
-  <div class="panel"><h2>版本分布</h2>{version_rows}</div>
+<div class="panel" id="sec-table">
+{parts['sec-table']}
 </div>
 
-<div class="panel">
-  <h2>安装明细</h2>
-  <table>
-    <thead><tr><th>安装 ID</th><th>平台</th><th>来源</th><th>版本</th><th>活跃天数</th><th>最近上报</th></tr></thead>
-    <tbody>{trs}</tbody>
-  </table>
-</div>
-
-<footer>
-  共收到 {data['totalEvents']} 条心跳 &nbsp;·&nbsp; 最近一次 {esc(data['latestReportDay'] or '—')}<br>
-  同一安装每天最多上报一次；服务端做同样去重。数据不含账号、token、路径、主机名或 IP。<br>
-  原始事件：<code>{esc(FILE)}</code>
+<footer id="sec-footer">
+{parts['sec-footer']}
 </footer>
 </div>
-<script>setTimeout(function(){{location.reload()}},30000)</script>
+<script>{PAGE_JS}</script>
 </body></html>'''
+
+
+# 页面脚本：手动刷新 + 自动刷新开关。
+# 单独放成普通字符串，避免塞进 f-string 后每个大括号都要写两遍。
+PAGE_JS = r"""
+(function () {
+  var btn = document.getElementById('cb_refresh')
+  var spin = document.getElementById('cb_spin')
+  var auto = document.getElementById('cb_auto')
+  var stamp = document.getElementById('cb_stamp')
+  var label = auto ? auto.querySelector('.cb_autolabel') : null
+  var busy = false, timer = null, autoOn = true
+
+  function pad(n) { return n < 10 ? '0' + n : '' + n }
+  function hhmmss(d) { return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()) }
+
+  function apply(parts) {
+    for (var k in parts) {
+      if (!Object.prototype.hasOwnProperty.call(parts, k)) continue
+      var el = document.getElementById(k)
+      if (el) el.innerHTML = parts[k]
+    }
+  }
+
+  async function refresh(silent) {
+    if (busy) return
+    busy = true
+    if (!silent && spin) spin.classList.add('spin')
+    try {
+      var r = await fetch('/parts', { cache: 'no-store', credentials: 'same-origin' })
+      // 口令失效（换了 token 或 cookie 过期）就退回整页，让它重新显示登录框
+      if (r.status === 403) { location.reload(); return }
+      var j = await r.json()
+      if (j && j.ok && j.parts) {
+        apply(j.parts)
+        if (stamp) stamp.textContent = '刷新于 ' + hhmmss(new Date())
+      } else {
+        if (stamp) stamp.textContent = '刷新失败'
+      }
+    } catch (e) {
+      // 断网、服务重启都会走到这里：不要弹窗，也不要停掉自动刷新
+      if (stamp) stamp.textContent = '刷新失败（网络）'
+    } finally {
+      busy = false
+      if (!silent && spin) spin.classList.remove('spin')
+    }
+  }
+
+  function schedule() {
+    if (timer) { clearInterval(timer); timer = null }
+    if (autoOn) timer = setInterval(function () { refresh(true) }, 30000)
+  }
+
+  if (btn) btn.addEventListener('click', function () { refresh(false) })
+
+  if (auto) {
+    auto.addEventListener('click', function () {
+      autoOn = !autoOn
+      auto.classList.toggle('off', !autoOn)
+      if (label) label.textContent = autoOn ? '自动刷新 30s' : '自动刷新已关'
+      schedule()
+    })
+  }
+
+  // 标签页在后台时没必要继续拉数据；切回来立刻补一次
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      if (timer) { clearInterval(timer); timer = null }
+    } else {
+      refresh(true)
+      schedule()
+    }
+  })
+
+  if (stamp) stamp.textContent = '刷新于 ' + hhmmss(new Date())
+  schedule()
+})()
+"""
 
 
 def login_page(error):
@@ -519,16 +665,21 @@ class Handler(BaseHTTPRequestHandler):
 
         wants_stats = path in ('/stats', '/api/stats')
         wants_page = path in ('/', '/index.html')
+        wants_parts = path == '/parts'
 
-        if wants_stats or wants_page:
+        if wants_stats or wants_page or wants_parts:
             if not self._authed(query):
-                if wants_stats:
+                if wants_parts or wants_stats:
                     return self._json(403, {'ok': False, 'error': 'forbidden'})
                 given = bool(query.get('token', [''])[0] or self.headers.get('X-Admin-Token'))
                 return self._html(200, login_page('口令不对' if given else ''))
             data = summarize(read_events())
             if wants_stats:
                 return self._json(200, data)
+            # 局部刷新：只回渲染好的 HTML 片段，前端直接换 innerHTML。
+            # 数字、图表、表格的拼装逻辑只留在服务端一份。
+            if wants_parts:
+                return self._json(200, {'ok': True, 'parts': page_parts(data)})
             extra = {}
             if ADMIN_TOKEN and query.get('token', [''])[0] == ADMIN_TOKEN:
                 extra['Set-Cookie'] = ('cb_admin=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000'
