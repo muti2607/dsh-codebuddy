@@ -602,6 +602,20 @@ function isExpired(credential) {
 export function apply(root, config = {}) {
   const cfg = config && typeof config === 'object' ? config : {}
   const logger = root.logger || console
+  /**
+   * 本进程**实际加载**的版本，在装载那一刻定格。
+   *
+   * 为什么不能在请求时现读磁盘：插件更新只换了磁盘上的文件，进程里跑的还是旧代码。
+   * 现读会得到新版本号，界面就会显示"已是 1.7.1"，而实际行为全是旧的——
+   * 这正是"我更新了怎么还是老样子"的来源。心跳上报用的也是这个值，两边必须一致。
+   */
+  const loadedVersion = (() => {
+    try { return String(readLocalVersion(moduleDir()) || '') } catch { return '' }
+  })()
+  /** 磁盘上当前的版本（可能已经比运行中的新，重启才生效）。 */
+  const onDiskVersion = () => {
+    try { return String(readLocalVersion(moduleDir()) || '') } catch { return '' }
+  }
   let teardown = () => {}
   // modelBridge：模型清单只有 install() 那边才拿得到（要凭据 + 远端目录），
   // 但 web 路由必须在 apply() 这层注册（同一前缀只能注册一次）。用一个显式
@@ -623,7 +637,7 @@ export function apply(root, config = {}) {
   // 用户仍然能查到有没有新版本。
   let updateTeardown = () => {}
   root.inject(['webServer'], (scoped) => {
-    updateTeardown = installUpdateRoutes(scoped, root, cfg, logger)
+    updateTeardown = installUpdateRoutes(scoped, root, cfg, logger, { loadedVersion, onDiskVersion })
   })
   // 登录路由：只要 webServer。凭据服务**可选**——它在回调里按需解析。
   //
@@ -635,7 +649,7 @@ export function apply(root, config = {}) {
   // 现在只注入 webServer，凭据在真正需要时再用 getCredentials() 判断。
   let loginTeardown = () => {}
   root.inject(['webServer'], (scoped) => {
-    loginTeardown = installLoginRoutes(scoped, cfg, logger, modelBridgeForInstall)
+    loginTeardown = installLoginRoutes(scoped, cfg, logger, modelBridgeForInstall, { loadedVersion, onDiskVersion })
   })
   return () => {
     modelBridgeForInstall.list = null
@@ -659,7 +673,7 @@ function moduleDir() {
  * 更新走官方 installBundle（内部是 pnpm），因此 lockfile 与实际安装一致，
  * 也不会出现 OFM 那种「插件改了磁盘、pnpm 按旧 lockfile 又改回去」的损坏。
  */
-function installUpdateRoutes(ctx, root, cfg, logger) {
+function installUpdateRoutes(ctx, root, cfg, logger, runtime) {
   const server = ctx.webServer
   if (!server || typeof server.register !== 'function') return () => {}
 
@@ -670,7 +684,9 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
     if (!force && state.last && now - state.last.checkedAt < 60_000) return state.last
     if (state.checking) return state.checking
     state.checking = (async () => {
-      const local = readLocalVersion(moduleDir())
+      // 拿"运行中的版本"去比，不是磁盘版本：磁盘已经 1.7.1 但进程还跑 1.7.0 时，
+      // 用磁盘版本比会说"已是最新"，用户就永远不知道该重启。
+      const local = runtime?.loadedVersion || readLocalVersion(moduleDir())
       const profileDir = profileDirFromEnv()
       const source = profileDir === null ? { spec: null, kind: 'unknown' } : inspectInstallSource(profileDir)
       try {
@@ -795,7 +811,10 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
           try { clientHalf = fs.existsSync(path.join(dir, 'client.js')) } catch { /* ignore */ }
           return json(200, {
             ok: true,
-            version: readLocalVersion(dir),
+            // 运行中的版本（装载时定格）；界面以它为准才不会被磁盘骗
+            version: runtime?.loadedVersion || readLocalVersion(dir),
+            // 磁盘上的版本：比上面新就说明"装了但没重启"
+            onDiskVersion: runtime?.onDiskVersion ? runtime.onDiskVersion() : readLocalVersion(dir),
             repo: REPO,
             clientHalf,
             settingsSection: 'dsh-codebuddy',
@@ -901,7 +920,7 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
       cfg,
       logger,
       home: String(cfg.dshHome || '').trim() || dshHome(),
-      version: (() => { try { return readLocalVersion(moduleDir()) } catch { return '' } })(),
+      version: loadedVersion,
       sourceKind: (() => {
         try {
           const pd = profileDirFromEnv()

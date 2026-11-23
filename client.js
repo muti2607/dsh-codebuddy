@@ -71,6 +71,8 @@ window.__ModuleLoader__.load({
         telemetryLast: '上次上报：{d}（v{v}）',
         telemetryNever: '从未上报的内容：',
         // 给用户看自己的安装 ID，前 8 位就能和统计页表格对上号
+        // 磁盘比运行中更新时，明确告诉用户"装了但没重启"
+        restartToApply: '磁盘上已是 {v}，但当前进程运行的还是 {cur}——重启 DSH 后生效。',
         telemetryId: '这台机器的安装 ID：{id}',
         telemetryIdHint: '（统计页表格里显示的是它的前 8 位，可用它认出哪一行是你）',
         neverExpire: '长期有效',
@@ -168,6 +170,7 @@ window.__ModuleLoader__.load({
           + 'install source and date — never accounts, tokens, paths or hostnames. To opt out: set telemetry: false.',
         telemetryLast: 'Last reported: {d} (v{v})',
         telemetryNever: 'Never sent:',
+        restartToApply: 'Version {v} is on disk, but this process is still running {cur} — restart DSH to apply it.',
         telemetryId: 'Install ID of this machine: {id}',
         telemetryIdHint: '(The stats table shows only its first 8 characters — use it to recognize your own row.)',
         neverExpire: 'No expiry',
@@ -884,6 +887,13 @@ window.__ModuleLoader__.load({
                 ? h('button', { className: 'cb_btn primary', disabled: updating, onClick: applyUpdate },
                   updating ? t('updating') : t('update'))
                 : null),
+            // 装了新版但进程没重启：这是"更新了怎么还是老样子"的真正原因，
+            // 必须直接说出来，而不是让界面显示一个骗人的新版本号。
+            (ver && ver.onDiskVersion && ver.version && ver.onDiskVersion !== ver.version)
+              ? h('div', { className: 'cb_note' }, t('restartToApply')
+                .replace('{v}', String(ver.onDiskVersion))
+                .replace('{cur}', String(ver.version)))
+              : null,
             update && update.available && update.updatable === false
               ? h('div', { className: 'cb_note' }, t('updateLocalHint')
                 + (update.installSource && update.installSource.spec ? '（' + update.installSource.spec + '）' : ''))
