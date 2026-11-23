@@ -578,9 +578,28 @@ _seen_lock = threading.Lock()
 START = time.time()
 
 
+class Server(ThreadingHTTPServer):
+    """
+    ThreadingHTTPServer + 两处收敛：
+
+    1. **不在日志里写客户端 IP**。基类的 handle_error() 会把
+       `('218.56.108.219', 2366)` 原样打进 traceback，这和"不记录 IP"
+       的承诺直接冲突。这里把它改掉，只记异常类型。
+    2. 浏览器主动断开（ConnectionResetError / BrokenPipeError）是常态，
+       不该刷一屏 traceback，安静返回即可。
+    """
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (ConnectionResetError, BrokenPipeError, TimeoutError)):
+            return
+        sys.stderr.write('request error: %s\n' % type(exc).__name__)
+
+
 def main():
     os.makedirs(DATA_DIR, exist_ok=True)
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
+    srv = Server((HOST, PORT), Handler)
     print('dsh-codebuddy 心跳接收端已启动')
     print('  监听   http://%s:%d' % (HOST, PORT))
     print('  数据   %s' % FILE)
