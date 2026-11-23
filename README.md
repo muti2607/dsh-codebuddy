@@ -259,6 +259,34 @@ MIT
 
 ## 更新日志
 
+### 1.8.1
+
+**修 1.8.0 的致命 bug：余额查询报 `home is not defined`。**
+
+1.8.0 挂上去之后，dsh-pet 的日志里是这一行：
+
+```
+[warn] [dsh-pet] 余额刷新失败 provider=codebuddy reason=fetch-error home is not defined
+```
+
+注册是成功的（否则报的会是 `unsupported`），坏在取数内部：我在 `install()`
+体内写了 `readAccounts(home())` 和 `resolveCredValue(...)`，可这两个名字只存在于
+`installLoginRoutes()` 那一层作用域；`install()` 里对应的名字是 `stateHome()`
+和 `readCredValue()`。改过来即可。
+
+这类错误特别阴险：取数是在 dsh-pet 刷新时才执行的，所以直接调
+`registerPetBalance()` 的单元测试全绿，只有真机上气泡一刷新才炸。为此补了两道
+检查（都反向验证过，重放 bug 会按名字报红）：
+
+- **静态作用域纪律**：切出 `install()` 的真实函数体（按大括号配平），
+  断言其中不出现 `home(` / `resolveCredValue(`，同时反过来确认
+  `stateHome()` / `readCredValue()` 确实用上了（否则会因「压根没写」而假绿）。
+- **真实 apply() 取数**：用真 `apply()` 跑一遍，让 `install()` 真的执行、
+  真的注册、真的取数，断言抛出的**不是** ReferenceError、报错文案不是
+  `is not defined` 这类。
+
+实测真实账号：`{"ok":true,"provider":"codebuddy","shape":"points","data":{"unit":"积分","total":"643.77"}}`
+
 ### 1.8.0
 
 **与 dsh-pet 打通：桌宠气泡能显示 CodeBuddy 积分了。**

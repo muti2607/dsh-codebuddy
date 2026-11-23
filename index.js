@@ -2515,13 +2515,17 @@ function install(ctx, cfg, logger, modelBridge) {
       return registerPetBalanceWhenReady(ctx, {
         logger,
         async fetchTotalCredits() {
-          const list = readAccounts(home()).filter((a) => a.enabled !== false)
+          // 注意作用域：这里在 install() 体内，账号目录是 stateHome()、
+          // 读凭据是 readCredValue()。登录路由那边另有同义的 home() /
+          // resolveCredValue()，但那是另一层作用域，在这里调会 ReferenceError
+          // （1.8.0 的实际事故：dsh-pet 报 fetch-error "home is not defined"）。
+          const list = readAccounts(stateHome()).filter((a) => a.enabled !== false)
           if (list.length === 0) throw new Error('还没有可用账号，请先添加 CodeBuddy 账号')
 
           // 多账号时求和：dsh-pet 的气泡只有一个数字，显示"总额"比只显示
           // 第一个账号更符合用户对"我还有多少积分"的预期。
           const results = await Promise.all(list.map(async (account) => {
-            const resolved = await resolveCredValue(account.credentialRef)
+            const resolved = await readCredValue(account.credentialRef)
             if (!resolved || typeof resolved.value !== 'string') return null
             let parsed
             try { parsed = JSON.parse(resolved.value) } catch { return null }
