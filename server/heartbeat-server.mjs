@@ -41,7 +41,8 @@ function loadSeen() {
   if (seenLoaded) return
   seenLoaded = true
   for (const e of readEvents()) {
-    if (e && e.installId && e.day) seen.add(e.installId + ':' + e.day)
+    const k = slotKey(e)
+    if (k) seen.add(k)
   }
 }
 
@@ -88,6 +89,24 @@ function readEvents() {
 
 function dayMs(d) { return Date.parse(d + 'T00:00:00Z') }
 
+/**
+ * 去重键：安装 ID + 小时。
+ *
+ * 以前按"天"去重，一小时一次的报告会被当成重复丢掉。现在插件按小时上报，
+ * 这里必须跟着放宽到小时。上限仍是每天 24 条/安装，不会无界增长。
+ */
+function slotKey(event) {
+  const iid = event && event.installId
+  if (!iid) return null
+  const ts = event.receivedAt
+  if (ts) {
+    const t = Date.parse(ts)
+    if (!Number.isNaN(t)) return iid + ':' + new Date(t).toISOString().slice(0, 13)
+  }
+  if (event.day) return iid + ':' + String(event.day) + 'T00'
+  return null
+}
+
 function summarize(events) {
   const installs = new Map()
   for (const e of events) {
@@ -100,6 +119,8 @@ function summarize(events) {
         platform: e.platform || '?',
         source: e.source || '?',
         firstEvent: e.event,
+        // 真实时刻，用来算"近 1 小时活跃"：按天的集合回答不了"现在还在不在"
+        lastAtMs: 0,
       }
       installs.set(e.installId, r)
     }
@@ -107,12 +128,17 @@ function summarize(events) {
     if (e.version) r.versions.add(e.version)
     if (e.platform) r.platform = e.platform
     if (e.source) r.source = e.source
+    if (e.receivedAt) {
+      const t = Date.parse(e.receivedAt)
+      if (!Number.isNaN(t)) r.lastAtMs = Math.max(r.lastAtMs, t)
+    }
   }
 
   const now = Date.now()
   const DAY = 86_400_000
   const lastMs = (r) => Math.max(...[...r.days].map(dayMs).filter((n) => !Number.isNaN(n)))
   const activeSince = (ms) => [...installs.values()].filter((r) => now - lastMs(r) <= ms).length
+  const active1h = [...installs.values()].filter((r) => r.lastAtMs && now - r.lastAtMs <= 3_600_000).length
 
   const byPlatform = {}, bySource = {}, byVersion = {}
   const bump = (o, k) => { o[k] = (o[k] || 0) + 1 }
@@ -138,6 +164,7 @@ function summarize(events) {
     active7d: activeSince(7 * DAY),
     active30d: activeSince(30 * DAY),
     activeToday: activeSince(1 * DAY),
+    active1h,
     totalEvents: events.length,
     latestReportDay: latest ? new Date(latest).toISOString().slice(0, 10) : null,
     byPlatform, bySource, byVersion, daily,
@@ -199,6 +226,7 @@ function sparkline(daily) {
 
 function renderCards(data) {
   return `<div class="card"><div class="k">总安装数</div><div class="v">${data.totalInstalls}</div><div class="note">按安装 ID 去重</div></div>
+  <div class="card"><div class="k">近 1 小时</div><div class="v">${data.active1h}</div><div class="note">1 小时内有上报</div></div>
   <div class="card"><div class="k">今日活跃</div><div class="v">${data.activeToday}</div><div class="note">今天有上报</div></div>
   <div class="card"><div class="k">7 日活跃</div><div class="v">${data.active7d}</div><div class="note">近 7 天内上报过</div></div>
   <div class="card"><div class="k">30 日活跃</div><div class="v">${data.active30d}</div><div class="note">近 30 天内上报过</div></div>`
@@ -543,12 +571,13 @@ const server = http.createServer(async (req, res) => {
       if (!body) return json(400, { ok: false, error: 'invalid payload' })
 
       loadSeen()
-      const key = body.installId + ':' + body.day
+      const receivedAt = new Date().toISOString()
+      const key = slotKey({ ...body, receivedAt })
       if (seen.has(key)) return json(202, { ok: true, deduped: true })
       seen.add(key)
 
       fs.mkdirSync(DATA_DIR, { recursive: true })
-      fs.appendFileSync(FILE, JSON.stringify({ ...body, receivedAt: new Date().toISOString() }) + '\n', 'utf8')
+      fs.appendFileSync(FILE, JSON.stringify({ ...body, receivedAt }) + '\n', 'utf8')
       return json(202, { ok: true })
     } catch {
       return json(400, { ok: false, error: 'bad request' })

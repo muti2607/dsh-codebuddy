@@ -73,7 +73,7 @@ const ok = (m) => console.log('  ok ' + m)
   ok('payload 只有 6 个白名单字段，无身份信息')
 }
 
-// ---- 3. 同日不重复上报；首报是 install，之后是 daily ----
+// ---- 3. 间隔节流：默认 1 小时一次；首报是 install，之后是 daily ----
 {
   const id = 'b'.repeat(32)
   const today = '2026-11-22'
@@ -82,18 +82,33 @@ const ok = (m) => console.log('  ok ' + m)
   if (!first.send) fail('首次应上报')
   if (first.event !== 'install') fail('首次事件应是 install，实际 ' + first.event)
 
-  const sameDay = planSend({ state: { day: today, firstAt: now - 86400000 }, installId: id, now })
-  if (sameDay.send) fail('同一天不得重复上报（会刷量）')
-  if (sameDay.reason !== 'already-reported-today') fail('同日应说明原因，实际 ' + sameDay.reason)
+  // 刚报过 → 1 小时内不再报（防刷量）
+  const justNow = planSend({ state: { firstAt: now - 86400000, lastAt: now - 60_000 }, installId: id, now })
+  if (justNow.send) fail('刚报过 1 分钟内不得重复上报（会刷量）')
+  if (justNow.reason !== 'throttled') fail('应说明 throttled，实际 ' + justNow.reason)
 
-  const nextDay = planSend({ state: { day: today, firstAt: now - 86400000 }, installId: id, now: now + 86400000 })
-  if (!nextDay.send) fail('隔天应上报')
-  if (nextDay.event !== 'daily') fail('隔天事件应是 daily，实际 ' + nextDay.event)
+  // 过了 1 小时 → 应再报一次，且事件为 daily
+  const hourLater = planSend({ state: { firstAt: now - 86400000, lastAt: now - 3_600_001 }, installId: id, now })
+  if (!hourLater.send) fail('超过默认间隔应上报')
+  if (hourLater.event !== 'daily') fail('后续事件应是 daily，实际 ' + hourLater.event)
+
+  // 自定义间隔：10 分钟配置下，11 分钟前报过就该再报
+  const custom = planSend({
+    state: { firstAt: now - 86400000, lastAt: now - 660_000 }, installId: id, now, intervalMs: 600_000,
+  })
+  if (!custom.send) fail('自定义 10 分钟间隔下，11 分钟前应已可上报')
+
+  // 下限保护发生在 index.js 接收用户配置那一层（夹到 5 分钟），
+  // 这一层只保证"传多少就按多少节流"。这里验证 5 分钟配置下的行为。
+  const floor = planSend({
+    state: { firstAt: now - 86400000, lastAt: now - 60_000 }, installId: id, now, intervalMs: 300_000,
+  })
+  if (floor.send) fail('间隔下限 5 分钟：1 分钟前报过不应再报')
 
   const noId = planSend({ state: {}, installId: null, now })
   if (noId.send) fail('没有安装 ID 时不得上报')
   if (noId.reason !== 'no-install-id') fail('应说明 no-install-id')
-  ok('同日去重、install/daily 区分正确')
+  ok('间隔节流、install/daily 区分、间隔下限')
 }
 
 // ---- 4. 未配置端点 → 一个请求都不发 ----
@@ -310,4 +325,36 @@ const ok = (m) => console.log('  ok ' + m)
   } finally { fs.rmSync(home, { recursive: true, force: true }) }
 }
 
-console.log(process.exitCode ? '\nHEARTBEAT FAILED' : 'PASS heartbeat (no identity fields, opt-out works, backoff bounded)')
+// ---- 12. 周期上报：DSH 开着就一直报，且能停 ----
+// 旧实现是一次性 setTimeout，开着不关的机器一辈子只报一次，
+// 统计里自然看起来"频率太低"。
+{
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cb-hb12-'))
+  try {
+    const sent = []
+    const fakeFetch = async (url, init) => {
+      sent.push(JSON.parse(init.body))
+      return new Response('{}', { status: 202 })
+    }
+    const h = scheduleHeartbeat({
+      cfg: { telemetryUrl: 'http://127.0.0.1:9/hb' },
+      logger: { warn() {} }, home,
+      version: '1.7.0', sourceKind: 'git', platform: 'win32',
+      fetchImpl: fakeFetch,
+      delayMs: 100,      // 首报
+      intervalMs: 300,   // 之后每 300ms 一次（测试专用，真实默认 1 小时）
+    })
+    if (!h || typeof h.stop !== 'function') fail('应返回可停止的句柄')
+
+    await new Promise((r) => setTimeout(r, 900))
+    if (sent.length < 2) fail('周期上报未生效：900ms 内只发了 ' + sent.length + ' 次')
+    const atStop = sent.length
+
+    h.stop()
+    await new Promise((r) => setTimeout(r, 700))
+    if (sent.length !== atStop) fail('stop() 之后不应再发，实际又发了 ' + (sent.length - atStop) + ' 次')
+    ok('周期上报生效，且 stop() 能彻底停掉（共 ' + atStop + ' 次）')
+  } finally { fs.rmSync(home, { recursive: true, force: true }) }
+}
+
+console.log(process.exitCode ? '\nHEARTBEAT FAILED' : 'PASS heartbeat (no identity fields, opt-out works, periodic, backoff bounded)')

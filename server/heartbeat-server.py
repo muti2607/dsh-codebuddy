@@ -42,7 +42,7 @@ FILE = os.path.join(DATA_DIR, 'events.ndjson')
 RATE_WINDOW = 60.0
 RATE_MAX = 60
 _hits = {}          # ip -> (start, count)
-_seen = set()       # "installId:day"
+_seen = set()       # "installId:YYYY-MM-DDTHH"（按小时去重，允许一天多条）
 _seen_loaded = False
 
 PLATFORM_LABEL = {'win32': 'Windows', 'darwin': 'macOS', 'linux': 'Linux'}
@@ -68,14 +68,40 @@ def read_events():
     return out
 
 
+def slot_key(event):
+    """
+    去重键：安装 ID + 小时。
+
+    以前按“天”去重，一小时一次的报告会被当成重复丢掉。现在插件按小时上报，
+    这里必须跟着放宽到小时，否则数据还是每天一条。
+    上限仍然是每天 24 条/安装，不至于无界增长。
+    """
+    iid = event.get('installId')
+    if not iid:
+        return None
+    ts = event.get('receivedAt')
+    if ts:
+        try:
+            dt = datetime.datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+            return iid + ':' + dt.strftime('%Y-%m-%dT%H')
+        except Exception:
+            pass
+    day = event.get('day')
+    if day:
+        return iid + ':' + str(day) + 'T00'
+    return None
+
+
 def load_seen():
     global _seen_loaded
     if _seen_loaded:
         return
     _seen_loaded = True
     for e in read_events():
-        if e.get('installId') and e.get('day'):
-            _seen.add(e['installId'] + ':' + e['day'])
+        if e.get('installId'):
+            k = slot_key(e)
+            if k:
+                _seen.add(k)
 
 
 def rate_limited(ip):
@@ -134,6 +160,9 @@ def summarize(events):
                 'platform': e.get('platform') or '?',
                 'source': e.get('source') or '?',
                 'firstEvent': e.get('event'),
+                # 真实时刻（毫秒），用来算“近 1 小时活跃”。
+                # 按天的集合只能回答“今天来过没”，回答不了“现在还在不在”。
+                'lastAtMs': 0.0,
             }
             installs[iid] = r
         if e.get('day'):
@@ -144,6 +173,13 @@ def summarize(events):
             r['platform'] = e['platform']
         if e.get('source'):
             r['source'] = e['source']
+        ts = e.get('receivedAt')
+        if ts:
+            try:
+                dt = datetime.datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+                r['lastAtMs'] = max(r['lastAtMs'], dt.timestamp() * 1000.0)
+            except Exception:
+                pass
 
     now = time.time()
     DAY = 86400.0
@@ -192,6 +228,7 @@ def summarize(events):
         'active7d': active_since(7 * DAY),
         'active30d': active_since(30 * DAY),
         'activeToday': active_since(DAY),
+        'active1h': sum(1 for r in installs.values() if now * 1000 - (r.get('lastAtMs') or 0) <= 3_600_000),
         'totalEvents': len(events),
         'latestReportDay': latest_day,
         'byPlatform': by_platform,
@@ -263,6 +300,8 @@ def render_cards(data):
     return (
         '<div class="card"><div class="k">总安装数</div>'
         f'<div class="v">{data["totalInstalls"]}</div><div class="note">按安装 ID 去重</div></div>'
+        '<div class="card"><div class="k">近 1 小时</div>'
+        f'<div class="v">{data["active1h"]}</div><div class="note">1 小时内有上报</div></div>'
         '<div class="card"><div class="k">今日活跃</div>'
         f'<div class="v">{data["activeToday"]}</div><div class="note">今天有上报</div></div>'
         '<div class="card"><div class="k">7 日活跃</div>'
@@ -708,7 +747,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(400, {'ok': False, 'error': 'invalid payload'})
 
             load_seen()
-            key = body['installId'] + ':' + body['day']
+            body['receivedAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            key = slot_key(body)
             global _seen_lock
             with _seen_lock:
                 if key in _seen:
@@ -716,7 +756,6 @@ class Handler(BaseHTTPRequestHandler):
                 _seen.add(key)
 
             os.makedirs(DATA_DIR, exist_ok=True)
-            body['receivedAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
             with open(FILE, 'a', encoding='utf-8') as fh:
                 fh.write(json.dumps(body, ensure_ascii=False) + '\n')
             return self._json(202, {'ok': True})

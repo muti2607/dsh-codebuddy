@@ -89,10 +89,22 @@ export function buildPayload({ installId, version, platform, sourceKind, event }
  * 返回 { send: boolean, event, key, reason }。
  * `state` 是本地保存的上次上报信息；同一天不重复上报，避免刷量。
  */
-export function planSend({ state, installId, now = Date.now() }) {
+/**
+ * 默认上报间隔：1 小时。
+ *
+ * 隐私与新鲜度的折中：按天报只能看出"今天来过没"，按分钟报等于记录作息。
+ * 1 小时既能看出当天活跃曲线，又不足以还原具体的上下线时刻。
+ * 用户可以自己调（配置项 telemetryIntervalMs），最小值 5 分钟。
+ */
+export const DEFAULT_INTERVAL_MS = 60 * 60 * 1000
+export const MIN_INTERVAL_MS = 5 * 60 * 1000
+
+export function planSend({ state, installId, now = Date.now(), intervalMs = DEFAULT_INTERVAL_MS }) {
   if (!installId) return { send: false, reason: 'no-install-id' }
-  const today = new Date(now).toISOString().slice(0, 10)
   const prev = state && typeof state === 'object' ? state : {}
+  // 下限只防 0/NaN/负数。真正的"不许太密"由 index.js 在接收用户配置时夹住，
+  // 这样这一层可以被测试用很短的间隔验证"确实是周期上报"。
+  const every = Number(intervalMs) > 0 ? Number(intervalMs) : DEFAULT_INTERVAL_MS
 
   // 失败退避：端点挂了（作者关机器、服务器搬迁、被墙）时不要每次启动都重试。
   // 30 分钟起步，逐次翻倍，封顶 24 小时。这样即使对方天天重启，
@@ -103,10 +115,14 @@ export function planSend({ state, installId, now = Date.now() }) {
     if (now - Number(prev.failAt) < wait) return { send: false, reason: 'backoff' }
   }
 
-  if (prev.day === today) return { send: false, reason: 'already-reported-today' }
+  // 间隔节流（替代原来的"同一天只报一次"）
+  const last = Number(prev.lastAt) || 0
+  if (last && now - last < every) return { send: false, reason: 'throttled' }
+
   // 从来没上报过 → install；之后都是 daily
   const event = prev.firstAt ? 'daily' : 'install'
-  return { send: true, event, key: `${installId}:${today}` }
+  const slot = Math.floor(now / every)
+  return { send: true, event, key: `${installId}:${slot}` }
 }
 
 /** 读/写上传统计状态。失败静默。 */
@@ -168,7 +184,7 @@ export async function sendHeartbeat({
  *
  * 与自动更新一样用 unref 定时器：不阻止进程退出。
  */
-export function scheduleHeartbeat({ cfg, logger, home, version, sourceKind, platform, fetchImpl, delayMs = 20_000 }) {
+export function scheduleHeartbeat({ cfg, logger, home, version, sourceKind, platform, fetchImpl, delayMs = 10_000, intervalMs = DEFAULT_INTERVAL_MS }) {
   // 默认开启（这是"透明"的另一半：能被审计、能被关掉，但默认工作在岗）。
   if (cfg && cfg.telemetry === false) return null
   // 显式把 telemetryUrl 写成空串 = 关闭上报。
@@ -181,7 +197,7 @@ export function scheduleHeartbeat({ cfg, logger, home, version, sourceKind, plat
     try {
       const installId = readInstallId(home)
       const state = readState(home)
-      const plan = planSend({ state, installId })
+      const plan = planSend({ state, installId, intervalMs })
       if (!plan.send) return
       const payload = buildPayload({ installId, version, platform, sourceKind, event: plan.event })
       const result = await sendHeartbeat({ url, payload, fetchImpl })
@@ -212,8 +228,21 @@ export function scheduleHeartbeat({ cfg, logger, home, version, sourceKind, plat
     }
   }
 
-  // 错开启动高峰：更新检查是 60s，心跳放 20s，避免两个请求撞在一起。
-  const timer = setTimeout(run, Math.max(1000, delayMs))
+  // 错开启动高峰：更新检查是 60s，心跳先等一小会儿，避免两个请求撞在一起。
+  const firstDelay = Math.max(50, delayMs)
+  const every = Number(intervalMs) > 0 ? Number(intervalMs) : DEFAULT_INTERVAL_MS
+
+  // 以前是一次性 setTimeout：DSH 开着不关就只报过一次，统计里自然是死的。
+  // 现在改成周期上报，开着就一直报。
+  const timer = setTimeout(run, firstDelay)
   timer.unref?.()
-  return timer
+  const ticker = setInterval(run, every)
+  ticker.unref?.()
+  // 返回一个能同时停掉两段的句柄；保留 unref 让调用方写法不变
+  return {
+    unref() { timer.unref?.(); ticker.unref?.() },
+    stop() { clearTimeout(timer); clearInterval(ticker) },
+    firstDelay,
+    intervalMs: every,
+  }
 }

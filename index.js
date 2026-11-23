@@ -61,7 +61,7 @@ import {
   writeLocalCredential,
   deleteLocalCredential,
 } from './src/credential-store.js'
-import { scheduleHeartbeat, readState as readTelemetryState, readInstallId, DEFAULT_TELEMETRY_URL } from './src/heartbeat.js'
+import { scheduleHeartbeat, readState as readTelemetryState, readInstallId, DEFAULT_TELEMETRY_URL, MIN_INTERVAL_MS } from './src/heartbeat.js'
 
 const PROVIDER = 'codebuddy'
 const DISPLAY_NAME = 'CodeBuddy (腾讯免费)'
@@ -833,6 +833,11 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
             // 字段清单公开在这里，比写在 README 里更难说谎
             fields: ['event', 'installId', 'version', 'platform', 'source', 'day'],
             neverSent: ['账号', 'token', '项目路径', '主机名', '用户名', '邮箱', 'IP'],
+            // 上报频率也摆出来：用户有权知道自己多久被记一次
+            intervalMs: (() => {
+              const raw = Number(cfg.telemetryIntervalMs)
+              return Number.isFinite(raw) && raw > 0 ? Math.max(MIN_INTERVAL_MS, raw) : DEFAULT_INTERVAL_MS
+            })(),
           })
         }
         return json(404, { ok: false, error: 'not found' })
@@ -904,12 +909,20 @@ function installUpdateRoutes(ctx, root, cfg, logger) {
         } catch { return 'unknown' }
       })(),
       platform: process.platform,
+      // 用户想更密/更疏都可以自己调。下限在**这里**夹住：5 分钟，
+      // 再密就等于在记录作息了，那不是"使用统计"该干的事。
+      intervalMs: (() => {
+        const raw = Number(cfg.telemetryIntervalMs)
+        return Number.isFinite(raw) && raw > 0 ? Math.max(MIN_INTERVAL_MS, raw) : undefined
+      })(),
     })
   } catch { /* 统计绝不能影响装载 */ }
 
   return () => {
     try {
-      if (heartbeatTimer) clearTimeout(heartbeatTimer)
+      // 心跳现在是「首报 + 周期上报」两段定时器，必须都停掉
+      if (heartbeatTimer && typeof heartbeatTimer.stop === 'function') heartbeatTimer.stop()
+      else if (heartbeatTimer) { clearTimeout(heartbeatTimer); clearInterval(heartbeatTimer) }
     } catch { /* ignore */ }
     try {
       if (timer && typeof timer === 'object') {
