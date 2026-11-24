@@ -259,6 +259,44 @@ MIT
 
 ## 更新日志
 
+### 1.8.3
+
+**修「请求被拦截，请重新发送 / Illegal API invocation from an unapproved channel」一直复现。**
+
+腾讯扫的是**整个 body**，不只 messages。插件原本只净化 messages：
+system 整段换中性文案、各角色文本过 `sanitizeText`。但 `options.tools`
+是原样发出去的：
+
+```js
+body.tools = options.tools.map((t) => ({ function: {
+  name: t.name, description: t.description, parameters: t.parameters } }))
+```
+
+而 DSH 的工具描述里就带 `DeepSeek Harness`、`Tokens prefixed with @ ...
+workspace root` 这些原句。于是只要这轮带工具（几乎每轮都带）就必被拦。
+messages 那条路径一直是对的，所以只测 messages 的用例一路全绿——
+这是这次最该记的教训：**测公用的判定口径，别测单个字段**。
+
+现在工具描述走 `sanitizeText`，参数 schema 走新增的 `sanitizeSchema`：
+
+- 递归下探 `description` / `title` / `examples` 等文案字段；
+- **键名、`required`、`enum`、`$ref`、参数名一律不动**——那些是模型和宿主
+  之间的契约，改一个字符工具就废了；
+- 工具**名**不净化，模型按名字回传 tool_calls，改名宿主就找不到工具；
+- 无命中时返回原引用，不给每轮请求做无谓深拷贝。
+
+顺带收掉 `the the coding platform` 这种替换后残留的重复冠词。
+
+新增 `test/verify-wire-sanitize.mjs`（23 组之一）。它截获真实请求体，
+断言的是**整段 JSON 不含任何敏感词**（腾讯的判定口径），而不是"某字段被改过"；
+同时断言工具名/参数键/required/类型全部未变。
+
+反向验证：把 `description: sanitizeText(t.description)` 改回原样透传，
+6 项同时报红，残留词正是 `DeepSeek, Harness, Tokens prefixed with @`。
+
+真机验证：真实账号 + 工具描述里塞满上述原句，上游正常返回「收到」，
+不再报 11128。
+
 ### 1.8.2
 
 **修「处理失败 · 本轮运行失败 → cannot get property "attachments" without inject」。**

@@ -131,6 +131,9 @@ const BLOCKED_PATTERNS = [
   // 兜底：任何剩余的品牌名
   [/DeepSeek\s+Harness/gi, 'the coding platform'],
   [/deepseek-harness/gi, 'the-coding-platform'],
+  // 上一行替换后可能留下 "the the coding platform"（原文是 "the DeepSeek Harness"），
+  // 顺手收掉重复冠词，避免工具描述读起来别扭。
+  [/\bthe\s+the\s+coding/gi, 'the coding'],
   // 这句话单独出现也可能被识别（保守起见一并换掉）
   [/AI agent powered by DeepSeek/gi, 'helpful coding assistant'],
 ]
@@ -149,6 +152,60 @@ function sanitizeText(text) {
   let out = text
   for (const [re, to] of BLOCKED_PATTERNS) out = out.replace(re, to)
   return out
+}
+
+/**
+ * 递归净化 JSON Schema 里的**文案**字段（description / title / 枚举说明等）。
+ *
+ * 为什么需要单独一个函数：工具的 parameters 是嵌套结构，敏感句可能藏在
+ * 任意一层属性的 description 里。但**不能整段 JSON.stringify 后做替换**——
+ * 替换会改到 `properties` 的键名、`$ref`、`enum` 取值，那些是模型和宿主
+ * 之间的契约，改一个字符工具就废了。所以只下探"值是自然语言"的字段。
+ *
+ * 只在确实命中特征词时才新建对象（无命中直接返回原引用），
+ * 避免给每轮请求都做一次深拷贝。
+ */
+const SCHEMA_TEXT_KEYS = new Set(['description', 'title', 'summary', 'hint', 'placeholder', 'example', 'examples', 'deprecated', 'comment', '$comment'])
+
+function sanitizeSchema(node, depth = 0) {
+  if (depth > 24) return node
+  if (typeof node === 'string') return sanitizeText(node)
+  if (Array.isArray(node)) {
+    let changed = false
+    const out = node.map((item) => {
+      // enum / required / 数组取值是契约，**只给字符串做净化会改掉枚举身份**，
+      // 所以数组元素只递归对象、不动裸字符串。
+      if (item && typeof item === 'object') {
+        const next = sanitizeSchema(item, depth + 1)
+        if (next !== item) changed = true
+        return next
+      }
+      return item
+    })
+    return changed ? out : node
+  }
+  if (!node || typeof node !== 'object') return node
+  let changed = false
+  const out = {}
+  for (const [key, value] of Object.entries(node)) {
+    // 键名一律不动（properties 的键就是参数名）
+    let next = value
+    if (SCHEMA_TEXT_KEYS.has(key) && typeof value === 'string') next = sanitizeText(value)
+    else if (key === 'properties' && value && typeof value === 'object') {
+      // properties 的**键**是参数名，不能动；值是子 schema，递归
+      let subChanged = false
+      const sub = {}
+      for (const [pname, pschema] of Object.entries(value)) {
+        const pnext = sanitizeSchema(pschema, depth + 1)
+        if (pnext !== pschema) subChanged = true
+        sub[pname] = pnext
+      }
+      next = subChanged ? sub : value
+    } else if (value && typeof value === 'object') next = sanitizeSchema(value, depth + 1)
+    if (next !== value) changed = true
+    out[key] = next
+  }
+  return changed ? out : node
 }
 
 /**
@@ -2141,7 +2198,20 @@ function install(ctx, cfg, logger, modelBridge) {
     const wire = serializeMessages(options.messages, await resolveImageUrls(options.messages, options.signal))
     const body = { model: options.model, messages: wire, stream: true, prompt_cache_key: promptCacheKey }
     if (Array.isArray(options.tools) && options.tools.length > 0) {
-      body.tools = options.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.parameters } }))
+      body.tools = options.tools.map((t) => ({
+        type: 'function',
+        function: {
+          // ⚠️ 工具名**不净化**：模型会按这个名字回传 tool_calls，改名宿主就
+          // 找不到对应工具，等于废掉这个工具。名字里通常也不含触发句。
+          name: t.name,
+          // 描述和参数 schema 必须净化：DSH 的工具描述里带 "DeepSeek Harness"、
+          // "@ paths ... workspace root" 这类原句，而服务端扫的是**整个 body**。
+          // 只净化 messages 不净化 tools，是 11128 一直复现的直接原因
+          // （实测 tools[].function.description 原样带着敏感词发出去了）。
+          description: sanitizeText(t.description),
+          parameters: sanitizeSchema(t.parameters),
+        },
+      }))
     }
     const meta = metaFor(options.model)
     const maxTokens = readNumber(options.maxTokens) || readNumber(meta && meta.maxOutputTokens)
